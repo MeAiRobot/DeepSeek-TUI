@@ -112,7 +112,7 @@ If you are upgrading from older releases:
 
 - `api_key` (string, required): must be non-empty (or set `DEEPSEEK_API_KEY`).
 - `base_url` (string, optional): defaults to `https://api.deepseek.com` (OpenAI-compatible Responses API).
-- `default_text_model` (string, optional): defaults to `deepseek-reasoner`. Supported IDs are `deepseek-reasoner` and `deepseek-chat`.
+- `default_text_model` (string, optional): defaults to `deepseek-reasoner`. Any valid DeepSeek model ID is accepted (common IDs: `deepseek-reasoner`, `deepseek-chat`). Use `/models` to discover live IDs from your configured endpoint.
 - `allow_shell` (bool, optional): defaults to `true` (sandboxed).
 - `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`. Runtime `approval_mode` editing in `/config` also accepts `on-request` and `untrusted` aliases.
 - `sandbox_mode` (string, optional): `read-only`, `workspace-write`, `danger-full-access`, `external-sandbox`.

@@ -19,7 +19,7 @@ pub const DEFAULT_TEXT_MODEL: &str = "deepseek-reasoner";
 const API_KEYRING_SENTINEL: &str = "__KEYRING__";
 pub const COMMON_DEEPSEEK_MODELS: &[&str] = &["deepseek-chat", "deepseek-reasoner"];
 
-/// Canonicalize supported model aliases to one of the two supported IDs.
+/// Canonicalize common model aliases to stable DeepSeek IDs.
 #[must_use]
 pub fn canonical_model_name(model: &str) -> Option<&'static str> {
     match model.trim().to_ascii_lowercase().as_str() {
@@ -27,6 +27,34 @@ pub fn canonical_model_name(model: &str) -> Option<&'static str> {
         "deepseek-reasoner" | "deepseek-r1" => Some("deepseek-reasoner"),
         _ => None,
     }
+}
+
+/// Normalize a configured/runtime model name.
+///
+/// Accepts known aliases plus any valid `deepseek*` model ID so future
+/// DeepSeek releases work without code changes.
+#[must_use]
+pub fn normalize_model_name(model: &str) -> Option<String> {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(canonical) = canonical_model_name(trimmed) {
+        return Some(canonical.to_string());
+    }
+
+    let normalized = trimmed.to_ascii_lowercase();
+    if !normalized.starts_with("deepseek") {
+        return None;
+    }
+
+    if normalized.chars().all(|ch| {
+        ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_' | '.' | ':')
+    }) {
+        return Some(normalized);
+    }
+
+    None
 }
 
 // === Types ===
@@ -184,10 +212,10 @@ impl Config {
             }
         }
         if let Some(model) = self.default_text_model.as_deref()
-            && canonical_model_name(model).is_none()
+            && normalize_model_name(model).is_none()
         {
             anyhow::bail!(
-                "Invalid default_text_model '{model}': expected deepseek-chat or deepseek-reasoner."
+                "Invalid default_text_model '{model}': expected a DeepSeek model ID (for example: deepseek-chat, deepseek-reasoner, deepseek-v4)."
             );
         }
         if let Some(policy) = self.approval_policy.as_deref() {
@@ -673,9 +701,9 @@ fn apply_env_overrides(config: &mut Config) {
 
 fn normalize_model_config(config: &mut Config) {
     if let Some(model) = config.default_text_model.as_deref()
-        && let Some(canonical) = canonical_model_name(model)
+        && let Some(normalized) = normalize_model_name(model)
     {
-        config.default_text_model = Some(canonical.to_string());
+        config.default_text_model = Some(normalized);
     }
 }
 
@@ -1216,6 +1244,39 @@ mod tests {
     #[test]
     fn test_missing_api_key_allowed() -> Result<()> {
         let config = Config::default();
+        config.validate()?;
+        Ok(())
+    }
+
+    #[test]
+    fn normalize_model_name_handles_aliases_and_future_ids() {
+        assert_eq!(
+            normalize_model_name("deepseek-v3.2").as_deref(),
+            Some("deepseek-chat")
+        );
+        assert_eq!(
+            normalize_model_name("deepseek-r1").as_deref(),
+            Some("deepseek-reasoner")
+        );
+        assert_eq!(
+            normalize_model_name("DeepSeek-V4").as_deref(),
+            Some("deepseek-v4")
+        );
+    }
+
+    #[test]
+    fn normalize_model_name_rejects_invalid_or_non_deepseek_ids() {
+        assert!(normalize_model_name("gpt-4o").is_none());
+        assert!(normalize_model_name("deepseek v4").is_none());
+        assert!(normalize_model_name("").is_none());
+    }
+
+    #[test]
+    fn validate_accepts_future_deepseek_model_id() -> Result<()> {
+        let config = Config {
+            default_text_model: Some("deepseek-v4".to_string()),
+            ..Default::default()
+        };
         config.validate()?;
         Ok(())
     }

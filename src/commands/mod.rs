@@ -376,9 +376,23 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
             "The /deepseek command was renamed. Use /links (aliases: /dashboard, /api).",
         ),
 
-        _ => CommandResult::error(format!(
-            "Unknown command: /{command}. Type /help for available commands."
-        )),
+        _ => {
+            let suggestions = suggest_command_names(command, 3);
+            if suggestions.is_empty() {
+                CommandResult::error(format!(
+                    "Unknown command: /{command}. Type /help for available commands."
+                ))
+            } else {
+                let list = suggestions
+                    .into_iter()
+                    .map(|name| format!("/{name}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                CommandResult::error(format!(
+                    "Unknown command: /{command}. Did you mean: {list}? Type /help for available commands."
+                ))
+            }
+        }
     }
 }
 
@@ -404,6 +418,87 @@ pub fn commands_matching(prefix: &str) -> Vec<&'static CommandInfo> {
         .filter(|cmd| {
             cmd.name.starts_with(&prefix) || cmd.aliases.iter().any(|a| a.starts_with(&prefix))
         })
+        .collect()
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    if a == b {
+        return 0;
+    }
+    if a.is_empty() {
+        return b.chars().count();
+    }
+    if b.is_empty() {
+        return a.chars().count();
+    }
+
+    let b_chars: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b_chars.len()).collect();
+    let mut curr = vec![0usize; b_chars.len() + 1];
+
+    for (i, a_ch) in a.chars().enumerate() {
+        curr[0] = i + 1;
+        for (j, b_ch) in b_chars.iter().enumerate() {
+            let cost = if a_ch == *b_ch { 0 } else { 1 };
+            let delete = prev[j + 1] + 1;
+            let insert = curr[j] + 1;
+            let substitute = prev[j] + cost;
+            curr[j + 1] = delete.min(insert).min(substitute);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+
+    prev[b_chars.len()]
+}
+
+fn suggest_command_names(input: &str, limit: usize) -> Vec<String> {
+    let query = input.trim().to_ascii_lowercase();
+    if query.is_empty() || limit == 0 {
+        return Vec::new();
+    }
+
+    let mut scored: Vec<(u8, usize, String)> = Vec::new();
+    for command in COMMANDS {
+        let mut best: Option<(u8, usize)> = None;
+        for candidate in std::iter::once(command.name).chain(command.aliases.iter().copied()) {
+            let candidate = candidate.to_ascii_lowercase();
+            let prefix_match = candidate.starts_with(&query) || query.starts_with(&candidate);
+            let contains_match = candidate.contains(&query) || query.contains(&candidate);
+            let distance = edit_distance(&candidate, &query);
+            let close_typo = distance <= 2;
+            if !(prefix_match || contains_match || close_typo) {
+                continue;
+            }
+
+            let rank = if prefix_match {
+                0
+            } else if contains_match {
+                1
+            } else {
+                2
+            };
+
+            match best {
+                Some((best_rank, best_distance))
+                    if rank > best_rank || (rank == best_rank && distance >= best_distance) => {}
+                _ => best = Some((rank, distance)),
+            }
+        }
+
+        if let Some((rank, distance)) = best {
+            scored.push((rank, distance, command.name.to_string()));
+        }
+    }
+
+    scored.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, _, name)| name)
         .collect()
 }
 
@@ -491,5 +586,28 @@ mod tests {
         assert!(deepseek_msg.contains("/dashboard"));
         assert!(deepseek_msg.contains("/api"));
         assert!(deepseek_result.action.is_none());
+    }
+
+    #[test]
+    fn unknown_command_suggests_nearest_match() {
+        let mut app = create_test_app();
+        let result = execute("/modle", &mut app);
+        let msg = result
+            .message
+            .expect("unknown command should return an error message");
+        assert!(msg.contains("Unknown command: /modle"));
+        assert!(msg.contains("Did you mean:"));
+        assert!(msg.contains("/model"));
+    }
+
+    #[test]
+    fn unknown_command_without_close_match_keeps_help_guidance() {
+        let mut app = create_test_app();
+        let result = execute("/zzzzzz", &mut app);
+        let msg = result
+            .message
+            .expect("unknown command should return an error message");
+        assert!(msg.contains("Unknown command: /zzzzzz"));
+        assert!(msg.contains("Type /help for available commands."));
     }
 }

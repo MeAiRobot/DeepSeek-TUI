@@ -389,3 +389,81 @@ async fn code_execution_runs_python_and_returns_result_payload() {
     assert!(result.content.contains("hello from code exec"));
     assert!(result.content.contains("return_code"));
 }
+
+#[test]
+fn deferred_tool_requests_are_auto_activated() {
+    use std::collections::HashSet;
+
+    let catalog = vec![Tool {
+        tool_type: None,
+        name: "exec_shell".to_string(),
+        description: "Run shell commands".to_string(),
+        input_schema: json!({"type":"object","properties":{"cmd":{"type":"string"}}}),
+        allowed_callers: Some(vec!["direct".to_string()]),
+        defer_loading: Some(true),
+        input_examples: None,
+        strict: None,
+        cache_control: None,
+    }];
+
+    let mut active = HashSet::new();
+    assert!(!active.contains("exec_shell"));
+    assert!(maybe_activate_requested_deferred_tool(
+        "exec_shell",
+        &catalog,
+        &mut active
+    ));
+    assert!(active.contains("exec_shell"));
+}
+
+#[test]
+fn missing_tool_error_message_offers_suggestions() {
+    let catalog = vec![
+        Tool {
+            tool_type: None,
+            name: "read_file".to_string(),
+            description: "Read file contents".to_string(),
+            input_schema: json!({"type":"object","properties":{"path":{"type":"string"}}}),
+            allowed_callers: Some(vec!["direct".to_string()]),
+            defer_loading: Some(false),
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        },
+        Tool {
+            tool_type: None,
+            name: "grep_files".to_string(),
+            description: "Search file contents".to_string(),
+            input_schema: json!({"type":"object","properties":{"pattern":{"type":"string"}}}),
+            allowed_callers: Some(vec!["direct".to_string()]),
+            defer_loading: Some(false),
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        },
+    ];
+
+    let message = missing_tool_error_message("reed_file", &catalog);
+    assert!(message.contains("Did you mean:"));
+    assert!(message.contains("read_file"));
+    assert!(message.contains(TOOL_SEARCH_BM25_NAME));
+}
+
+#[test]
+fn missing_tool_error_message_includes_discovery_guidance_when_no_match() {
+    let catalog = vec![Tool {
+        tool_type: None,
+        name: "read_file".to_string(),
+        description: "Read file contents".to_string(),
+        input_schema: json!({"type":"object","properties":{"path":{"type":"string"}}}),
+        allowed_callers: Some(vec!["direct".to_string()]),
+        defer_loading: Some(false),
+        input_examples: None,
+        strict: None,
+        cache_control: None,
+    }];
+
+    let message = missing_tool_error_message("totally_unknown_tool", &catalog);
+    assert!(message.contains("not available in the current tool catalog"));
+    assert!(message.contains(TOOL_SEARCH_BM25_NAME));
+}

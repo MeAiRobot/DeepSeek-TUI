@@ -28,7 +28,7 @@ Per-model priors:
 
 - `deepseek_v3_2_chat = 3.9`
 - `deepseek_v3_2_reasoner = 4.1`
-- fallback `3.8`
+- fallback `3.8` (used for other DeepSeek IDs, including future releases)
 
 ### Failure Probability
 

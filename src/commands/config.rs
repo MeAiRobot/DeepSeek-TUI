@@ -1,7 +1,7 @@
 //! Config commands: config, settings, mode switches, trust, logout
 
 use super::CommandResult;
-use crate::config::{COMMON_DEEPSEEK_MODELS, canonical_model_name, clear_api_key};
+use crate::config::{COMMON_DEEPSEEK_MODELS, clear_api_key, normalize_model_name};
 use crate::palette;
 use crate::settings::Settings;
 use crate::tui::app::{App, AppAction, AppMode, OnboardingState, SidebarFocus};
@@ -26,13 +26,13 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
 
     match key.as_str() {
         "model" => {
-            let Some(model) = canonical_model_name(value) else {
+            let Some(model) = normalize_model_name(value) else {
                 return CommandResult::error(format!(
-                    "Invalid model '{value}'. Supported models: {}",
+                    "Invalid model '{value}'. Expected a DeepSeek model ID. Common models: {}",
                     COMMON_DEEPSEEK_MODELS.join(", ")
                 ));
             };
-            app.model = model.to_string();
+            app.model = model.clone();
             app.update_model_compaction_budget();
             app.last_prompt_tokens = None;
             app.last_completion_tokens = None;
@@ -387,6 +387,16 @@ mod tests {
             result.action,
             Some(AppAction::UpdateCompaction(_))
         ));
+    }
+
+    #[test]
+    fn test_set_model_accepts_future_deepseek_model_id() {
+        let mut app = create_test_app();
+        let result = set_config(&mut app, Some("model deepseek-v4"));
+        assert!(result.message.is_some());
+        let msg = result.message.unwrap();
+        assert!(msg.contains("model = deepseek-v4"));
+        assert_eq!(app.model, "deepseek-v4");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # DeepSeek CLI
 
-An agentic coding harness for [DeepSeek](https://platform.deepseek.com) models, built in Rust.
+A terminal-native TUI and CLI for [DeepSeek](https://platform.deepseek.com) models, built in Rust.
 
 [![CI](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/deepseek-tui)](https://crates.io/crates/deepseek-tui)
@@ -9,7 +9,7 @@ An agentic coding harness for [DeepSeek](https://platform.deepseek.com) models, 
   <img src="assets/hero.png" alt="DeepSeek CLI" width="800">
 </p>
 
-Works with DeepSeek v3.2 (chat + reasoner). Ready for v4. Not affiliated with DeepSeek Inc.
+For DeepSeek models (current and future model IDs). Not affiliated with DeepSeek Inc.
 
 ## What is this
 
@@ -57,6 +57,16 @@ deepseek                                  # interactive TUI
 deepseek -p "explain this in 2 sentences" # one-shot prompt
 deepseek --yolo                           # agent mode, all tools auto-approved
 deepseek doctor                           # check your setup
+```
+
+## Model IDs
+
+Common model IDs: `deepseek-chat`, `deepseek-reasoner`.
+
+Any valid `deepseek-*` model ID is accepted (including future releases). To see live IDs from your configured endpoint:
+
+```bash
+deepseek models
 ```
 
 ## Configuration

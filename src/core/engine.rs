@@ -698,6 +698,109 @@ fn discover_tools_with_bm25_like(catalog: &[Tool], query: &str) -> Vec<String> {
     scored.into_iter().take(5).map(|(_, name)| name).collect()
 }
 
+fn edit_distance(a: &str, b: &str) -> usize {
+    if a == b {
+        return 0;
+    }
+    if a.is_empty() {
+        return b.chars().count();
+    }
+    if b.is_empty() {
+        return a.chars().count();
+    }
+
+    let b_chars: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b_chars.len()).collect();
+    let mut curr = vec![0usize; b_chars.len() + 1];
+
+    for (i, a_ch) in a.chars().enumerate() {
+        curr[0] = i + 1;
+        for (j, b_ch) in b_chars.iter().enumerate() {
+            let cost = if a_ch == *b_ch { 0 } else { 1 };
+            let delete = prev[j + 1] + 1;
+            let insert = curr[j] + 1;
+            let substitute = prev[j] + cost;
+            curr[j + 1] = delete.min(insert).min(substitute);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+
+    prev[b_chars.len()]
+}
+
+fn suggest_tool_names(catalog: &[Tool], requested: &str, limit: usize) -> Vec<String> {
+    let requested = requested.trim().to_ascii_lowercase();
+    if requested.is_empty() || limit == 0 {
+        return Vec::new();
+    }
+
+    let mut candidates: Vec<(u8, usize, String)> = Vec::new();
+    for tool in catalog {
+        let candidate = tool.name.to_ascii_lowercase();
+        let prefix_match = candidate.starts_with(&requested) || requested.starts_with(&candidate);
+        let contains_match = candidate.contains(&requested) || requested.contains(&candidate);
+        let distance = edit_distance(&candidate, &requested);
+        let close_typo = distance <= 3;
+
+        if !(prefix_match || contains_match || close_typo) {
+            continue;
+        }
+
+        let rank = if prefix_match {
+            0
+        } else if contains_match {
+            1
+        } else {
+            2
+        };
+        candidates.push((rank, distance, tool.name.clone()));
+    }
+
+    candidates.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    candidates.dedup_by(|a, b| a.2 == b.2);
+    candidates
+        .into_iter()
+        .take(limit)
+        .map(|(_, _, name)| name)
+        .collect()
+}
+
+fn missing_tool_error_message(tool_name: &str, catalog: &[Tool]) -> String {
+    let suggestions = suggest_tool_names(catalog, tool_name, 3);
+    if suggestions.is_empty() {
+        return format!(
+            "Tool '{tool_name}' is not available in the current tool catalog. \
+             Verify mode/feature flags, or use {TOOL_SEARCH_BM25_NAME} with a short query."
+        );
+    }
+
+    format!(
+        "Tool '{tool_name}' is not available in the current tool catalog. \
+         Did you mean: {}? You can also use {TOOL_SEARCH_BM25_NAME} to discover tools.",
+        suggestions.join(", ")
+    )
+}
+
+fn maybe_activate_requested_deferred_tool(
+    tool_name: &str,
+    catalog: &[Tool],
+    active_tools: &mut std::collections::HashSet<String>,
+) -> bool {
+    let Some(def) = catalog.iter().find(|def| def.name == tool_name) else {
+        return false;
+    };
+
+    if !def.defer_loading.unwrap_or(false) || active_tools.contains(tool_name) {
+        return false;
+    }
+
+    active_tools.insert(tool_name.to_string())
+}
+
 fn execute_tool_search(
     tool_name: &str,
     input: &serde_json::Value,
@@ -838,9 +941,16 @@ fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
         ToolError::Timeout { seconds } => format!(
             "Tool '{tool_name}' timed out after {seconds}s. Try a narrower scope or a longer timeout."
         ),
-        ToolError::NotAvailable { message } => format!(
-            "Tool '{tool_name}' is not available: {message}. Check mode, feature flags, or tool name."
-        ),
+        ToolError::NotAvailable { message } => {
+            let lower = message.to_ascii_lowercase();
+            if lower.contains("current tool catalog") || lower.contains("did you mean:") {
+                message.clone()
+            } else {
+                format!(
+                    "Tool '{tool_name}' is not available: {message}. Check mode, feature flags, or tool name."
+                )
+            }
+        }
         ToolError::PermissionDenied { message } => format!(
             "Tool '{tool_name}' was denied: {message}. Adjust approval mode or request permission."
         ),
@@ -2631,21 +2741,36 @@ impl Engine {
                 let mut supports_parallel = false;
                 let mut read_only = false;
                 let mut blocked_error: Option<ToolError> = None;
-                let tool_def = tool_catalog.iter().find(|def| def.name == tool_name);
-
-                if let Some(def) = tool_def
-                    && def.defer_loading.unwrap_or(false)
-                    && !active_tool_names.contains(&tool_name)
-                {
-                    blocked_error = Some(ToolError::not_available(format!(
-                        "Tool '{tool_name}' is deferred and not yet loaded. Use {TOOL_SEARCH_BM25_NAME} or {TOOL_SEARCH_REGEX_NAME} first."
-                    )));
+                if maybe_activate_requested_deferred_tool(
+                    &tool_name,
+                    &tool_catalog,
+                    &mut active_tool_names,
+                ) {
+                    let _ = self
+                        .tx_event
+                        .send(Event::status(format!(
+                            "Auto-loaded deferred tool '{tool_name}' after model request."
+                        )))
+                        .await;
                 }
+                let tool_def = tool_catalog.iter().find(|def| def.name == tool_name);
 
                 if !caller_allowed_for_tool(tool_caller.as_ref(), tool_def) {
                     blocked_error = Some(ToolError::permission_denied(format!(
                         "Tool '{tool_name}' does not allow caller '{}'",
                         caller_type_for_tool_use(tool_caller.as_ref())
+                    )));
+                }
+
+                if blocked_error.is_none()
+                    && tool_def.is_none()
+                    && !McpPool::is_mcp_tool(&tool_name)
+                    && tool_name != CODE_EXECUTION_TOOL_NAME
+                    && !is_tool_search_tool(&tool_name)
+                {
+                    blocked_error = Some(ToolError::not_available(missing_tool_error_message(
+                        &tool_name,
+                        &tool_catalog,
                     )));
                 }
 

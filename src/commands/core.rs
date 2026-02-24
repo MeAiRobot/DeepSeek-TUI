@@ -2,7 +2,7 @@
 
 use std::fmt::Write;
 
-use crate::config::{COMMON_DEEPSEEK_MODELS, canonical_model_name};
+use crate::config::{COMMON_DEEPSEEK_MODELS, normalize_model_name};
 use crate::tui::app::{App, AppAction, AppMode};
 use crate::tui::views::{HelpView, ModalKind, SubAgentsView};
 
@@ -77,26 +77,26 @@ pub fn exit() -> CommandResult {
 /// Switch or view current model
 pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
     if let Some(name) = model_name {
-        let Some(canonical) = canonical_model_name(name) else {
+        let Some(model_id) = normalize_model_name(name) else {
             return CommandResult::error(format!(
-                "Invalid model '{name}'. Supported models: {}",
+                "Invalid model '{name}'. Expected a DeepSeek model ID. Common models: {}",
                 COMMON_DEEPSEEK_MODELS.join(", ")
             ));
         };
         let old_model = app.model.clone();
-        app.model = canonical.to_string();
+        app.model = model_id.clone();
         app.update_model_compaction_budget();
         app.last_prompt_tokens = None;
         app.last_completion_tokens = None;
         CommandResult::with_message_and_action(
-            format!("Model changed: {old_model} → {canonical}"),
+            format!("Model changed: {old_model} → {model_id}"),
             AppAction::UpdateCompaction(app.compaction_config()),
         )
     } else {
-        let supported = COMMON_DEEPSEEK_MODELS.join(", ");
+        let common = COMMON_DEEPSEEK_MODELS.join(", ");
         CommandResult::message(format!(
-            "Current model: {}\nSupported models: {}",
-            app.model, supported
+            "Current model: {}\nCommon models: {}\nTip: any valid DeepSeek model ID is accepted. Run /models to fetch live IDs from your API endpoint.",
+            app.model, common
         ))
     }
 }
@@ -342,12 +342,27 @@ mod tests {
     }
 
     #[test]
+    fn test_model_change_accepts_future_deepseek_model() {
+        let mut app = create_test_app();
+        let result = model(&mut app, Some("deepseek-v4"));
+        assert!(result.message.is_some());
+        let msg = result.message.unwrap();
+        assert!(msg.contains("deepseek-v4"));
+        assert_eq!(app.model, "deepseek-v4");
+        assert!(matches!(
+            result.action,
+            Some(AppAction::UpdateCompaction(_))
+        ));
+    }
+
+    #[test]
     fn test_model_change_rejects_invalid_model() {
         let mut app = create_test_app();
         let result = model(&mut app, Some("gpt-4"));
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(msg.contains("Invalid model"));
+        assert!(msg.contains("DeepSeek model ID"));
         assert!(msg.contains("deepseek-chat"));
         assert!(msg.contains("deepseek-reasoner"));
         assert!(result.action.is_none());
@@ -360,7 +375,8 @@ mod tests {
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(msg.contains("Current model:"));
-        assert!(msg.contains("Supported models:"));
+        assert!(msg.contains("Common models:"));
+        assert!(msg.contains("any valid DeepSeek model ID"));
         assert!(result.action.is_none());
     }
 

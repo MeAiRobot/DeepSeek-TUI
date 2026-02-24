@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::config::canonical_model_name;
+use crate::config::normalize_model_name;
 
 /// User settings with defaults
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,8 +74,7 @@ impl Settings {
         settings.default_model = settings
             .default_model
             .as_deref()
-            .and_then(canonical_model_name)
-            .map(ToString::to_string);
+            .and_then(normalize_model_name);
         Ok(settings)
     }
 
@@ -175,12 +174,12 @@ impl Settings {
                     return Ok(());
                 }
 
-                let Some(model) = canonical_model_name(trimmed) else {
+                let Some(model) = normalize_model_name(trimmed) else {
                     anyhow::bail!(
-                        "Failed to update setting: invalid model '{value}'. Expected: deepseek-chat, deepseek-reasoner, or none/default."
+                        "Failed to update setting: invalid model '{value}'. Expected: a DeepSeek model ID (for example deepseek-chat, deepseek-reasoner, deepseek-v4), or none/default."
                     );
                 };
-                self.default_model = Some(model.to_string());
+                self.default_model = Some(model);
             }
             _ => {
                 anyhow::bail!("Failed to update setting: unknown setting '{key}'.");
@@ -234,7 +233,7 @@ impl Settings {
             ("max_history", "Max input history entries"),
             (
                 "default_model",
-                "Default model: deepseek-chat or deepseek-reasoner",
+                "Default model: any DeepSeek model ID (e.g. deepseek-chat)",
             ),
         ]
     }

@@ -79,8 +79,8 @@ use crate::tui::history::{summarize_tool_args, summarize_tool_output};
     name = "deepseek",
     author,
     version,
-    about = "DeepSeek CLI - Chat with DeepSeek",
-    long_about = "Unofficial CLI for the DeepSeek API.\n\nJust run 'deepseek' to start chatting.\n\nNot affiliated with DeepSeek Inc."
+    about = "DeepSeek TUI/CLI for DeepSeek models",
+    long_about = "Terminal-native TUI and CLI for DeepSeek models.\n\nRun 'deepseek' to start.\n\nNot affiliated with DeepSeek Inc."
 )]
 struct Cli {
     /// Subcommand to run

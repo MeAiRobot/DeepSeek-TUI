@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.23] - 2026-02-24
+
+### Changed
+- Updated project copy to describe the app as a terminal-native TUI/CLI for DeepSeek models (not pinned to a specific model generation).
+
+### Fixed
+- Model selection and config validation now accept any valid `deepseek-*` model ID (including future releases), while still normalizing common aliases like `deepseek-v3.2` and `deepseek-r1`.
+- Tool-call recovery now auto-loads deferred tools when the model requests them directly, instead of failing with manual `tool_search_*` instructions.
+- Unknown tool-call failures now include discovery guidance and nearest tool-name suggestions instead of generic availability errors.
+- Slash-command errors now suggest the closest known command (for example `/modle` -> `/model`) instead of only returning a generic unknown-command message.
+
 ## [0.3.22] - 2026-02-19
 
 ### Added

@@ -1,8 +1,8 @@
 [package]
 name = "deepseek-tui"
-version = "0.3.22"
+version = "0.3.23"
 edition = "2024"
-description = "Unofficial DeepSeek CLI - Just run 'deepseek' to start chatting"
+description = "Terminal-native TUI and CLI for DeepSeek models"
 license = "MIT"
 repository = "https://github.com/Hmbown/DeepSeek-TUI"
 keywords = ["deepseek", "cli", "ai", "agent", "llm"]
