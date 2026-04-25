@@ -198,6 +198,11 @@ pub struct ToolContext {
     pub features: Features,
     /// Namespace for tool state that should be scoped to the current session/thread.
     pub state_namespace: String,
+    /// User-trusted external paths the agent may read/write even when they
+    /// fall outside `workspace`. Loaded from `~/.deepseek/workspace-trust.json`
+    /// and refreshed when the user runs `/trust add <path>`. Distinct from
+    /// `trust_mode`, which is the all-or-nothing legacy switch (#29).
+    pub trusted_external_paths: Vec<PathBuf>,
 }
 
 impl ToolContext {
@@ -219,6 +224,7 @@ impl ToolContext {
             auto_approve: false,
             features: Features::with_defaults(),
             state_namespace: "workspace".to_string(),
+            trusted_external_paths: Vec::new(),
         }
     }
 
@@ -243,6 +249,7 @@ impl ToolContext {
             auto_approve: false,
             features: Features::with_defaults(),
             state_namespace: "workspace".to_string(),
+            trusted_external_paths: Vec::new(),
         }
     }
 
@@ -267,7 +274,17 @@ impl ToolContext {
             auto_approve,
             features: Features::with_defaults(),
             state_namespace: "workspace".to_string(),
+            trusted_external_paths: Vec::new(),
         }
+    }
+
+    /// Set the user's trusted external paths (loaded from
+    /// `~/.deepseek/workspace-trust.json`). See [`Self::resolve_path`] for
+    /// how the list is consulted.
+    #[must_use]
+    pub fn with_trusted_external_paths(mut self, paths: Vec<PathBuf>) -> Self {
+        self.trusted_external_paths = paths;
+        self
     }
 
     /// Resolve a path relative to workspace, validating it doesn't escape.
@@ -317,7 +334,10 @@ impl ToolContext {
             // hasn't been canonicalized yet
             let workspace_plain = normalize_path(&self.workspace);
             let candidate_normalized = normalize_path(&candidate);
-            if !candidate_normalized.starts_with(&workspace_plain) {
+            if !candidate_normalized.starts_with(&workspace_plain)
+                && !self.is_trusted_external_path(&candidate_canonical)
+                && !self.is_trusted_external_path(&candidate_normalized)
+            {
                 return Err(ToolError::PathEscape {
                     path: candidate_canonical,
                 });
@@ -334,7 +354,9 @@ impl ToolContext {
                 ))
             })?;
 
-            if !canonical.starts_with(&workspace_canonical) {
+            if !canonical.starts_with(&workspace_canonical)
+                && !self.is_trusted_external_path(&canonical)
+            {
                 return Err(ToolError::PathEscape { path: canonical });
             }
 
@@ -376,14 +398,25 @@ impl ToolContext {
         }
         let canonical = normalize_path(&canonical);
 
-        // Validate it's under workspace
+        // Validate it's under workspace, OR is under a user-trusted external
+        // path (`/trust add <path>` from the slash command, persisted in
+        // `~/.deepseek/workspace-trust.json`).
         if !canonical.starts_with(&workspace_canonical)
             && !canonical.starts_with(&workspace_normalized)
+            && !self.is_trusted_external_path(&canonical)
         {
             return Err(ToolError::PathEscape { path: canonical });
         }
 
         Ok(canonical)
+    }
+
+    /// Whether `path` is under any of the user-trusted external roots. The
+    /// caller should pass an already-canonicalized (or normalized) path.
+    fn is_trusted_external_path(&self, path: &Path) -> bool {
+        self.trusted_external_paths
+            .iter()
+            .any(|trusted| path.starts_with(trusted))
     }
 
     /// Set the trust mode.
@@ -648,6 +681,39 @@ mod tests {
         // In trust mode, absolute paths should work
         let result = ctx.resolve_path("/tmp");
         assert!(result.is_ok());
+    }
+
+    /// Issue #29: paths under a user-trusted external directory resolve
+    /// successfully even though they fall outside the workspace, while
+    /// untrusted external paths still error with `PathEscape`.
+    #[test]
+    fn test_tool_context_trusted_external_path_allows_escape() {
+        let workspace = tempdir().expect("workspace tempdir");
+        let trusted_root = tempdir().expect("trusted tempdir");
+        let trusted_file = trusted_root.path().join("notes.md");
+        std::fs::write(&trusted_file, "shared notes").unwrap();
+
+        let ctx =
+            ToolContext::new(workspace.path().to_path_buf()).with_trusted_external_paths(vec![
+                trusted_root
+                    .path()
+                    .canonicalize()
+                    .unwrap_or_else(|_| trusted_root.path().to_path_buf()),
+            ]);
+
+        let resolved = ctx
+            .resolve_path(trusted_file.to_str().unwrap())
+            .expect("trusted path should resolve");
+        assert!(resolved.ends_with("notes.md"));
+
+        // Path outside workspace AND outside the trust list should still fail.
+        let other = tempdir().expect("untrusted tempdir");
+        let other_file = other.path().join("secret.md");
+        std::fs::write(&other_file, "x").unwrap();
+        let err = ctx
+            .resolve_path(other_file.to_str().unwrap())
+            .expect_err("untrusted path must error");
+        assert!(matches!(err, ToolError::PathEscape { .. }));
     }
 
     #[test]

@@ -51,6 +51,7 @@ mod tui;
 mod ui;
 mod utils;
 mod working_set;
+mod workspace_trust;
 
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS};
 use crate::eval::{EvalHarness, EvalHarnessConfig, ScenarioStepKind};

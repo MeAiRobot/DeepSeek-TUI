@@ -30,6 +30,11 @@ struct DiagnosticsOutput {
     sandbox_type: Option<String>,
     rustc_version: Option<String>,
     cargo_version: Option<String>,
+    /// User-trusted external paths the agent may access from this workspace
+    /// (`/trust add <path>` from the slash command, persisted in
+    /// `~/.deepseek/workspace-trust.json`). See issue #29.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    trusted_external_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -81,6 +86,11 @@ impl ToolSpec for DiagnosticsTool {
         let sandbox_type = crate::sandbox::get_platform_sandbox().map(|s| s.to_string());
         let sandbox_available = sandbox_type.is_some();
 
+        let trusted_external_paths = context
+            .trusted_external_paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
         let diagnostics = DiagnosticsOutput {
             workspace_root,
             current_dir,
@@ -92,6 +102,7 @@ impl ToolSpec for DiagnosticsTool {
             sandbox_type,
             rustc_version: probe_version("rustc", &["--version"], &context.workspace),
             cargo_version: probe_version("cargo", &["--version"], &context.workspace),
+            trusted_external_paths,
         };
 
         ToolResult::json(&diagnostics).map_err(|e| ToolError::execution_failed(e.to_string()))

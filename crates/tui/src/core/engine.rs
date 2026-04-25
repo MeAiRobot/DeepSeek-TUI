@@ -2020,6 +2020,11 @@ impl Engine {
     }
 
     fn build_tool_context(&self, mode: AppMode, auto_approve: bool) -> ToolContext {
+        // Load the per-workspace trusted-paths list (#29) on every tool-context
+        // build. Cheap (a small JSON file) and always reflects the latest
+        // `/trust add` / `/trust remove` mutations without an explicit cache
+        // refresh hook.
+        let trusted = crate::workspace_trust::WorkspaceTrust::load_for(&self.session.workspace);
         let ctx = ToolContext::with_auto_approve(
             self.session.workspace.clone(),
             self.session.trust_mode,
@@ -2029,7 +2034,8 @@ impl Engine {
         )
         .with_state_namespace(self.session.id.clone())
         .with_features(self.config.features.clone())
-        .with_shell_manager(self.shell_manager.clone());
+        .with_shell_manager(self.shell_manager.clone())
+        .with_trusted_external_paths(trusted.paths().to_vec());
 
         if mode == AppMode::Yolo {
             ctx.with_elevated_sandbox_policy(crate::sandbox::SandboxPolicy::WorkspaceWrite {

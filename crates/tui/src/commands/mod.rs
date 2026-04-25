@@ -241,8 +241,8 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "trust",
         aliases: &[],
-        description: "Enable trust mode (access files outside workspace)",
-        usage: "/trust",
+        description: "Manage workspace trust and per-path allowlist (`/trust add <path>`, `/trust list`, `/trust on|off`)",
+        usage: "/trust [on|off|add <path>|remove <path>|list]",
     },
     CommandInfo {
         name: "logout",
@@ -358,7 +358,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "yolo" => config::yolo(app),
         "agent" => config::agent_mode(app),
         "plan" => config::plan_mode(app),
-        "trust" => config::trust(app),
+        "trust" => config::trust(app, arg),
         "logout" => config::logout(app),
 
         // Debug commands
