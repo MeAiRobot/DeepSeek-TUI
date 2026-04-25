@@ -809,7 +809,7 @@ impl LlmClient for DeepSeekClient {
         // misses a case (e.g. a session restored from disk, a sub-agent
         // adding messages directly, or a cached prefix mismatch), this pass
         // still produces a valid request.
-        sanitize_thinking_mode_messages(
+        let replay_input_tokens = sanitize_thinking_mode_messages(
             &mut body,
             &request.model,
             request.reasoning_effort.as_deref(),
@@ -907,7 +907,7 @@ impl LlmClient for DeepSeekClient {
                                 // Stream complete
                             } else if let Ok(chunk_json) = serde_json::from_str::<Value>(&data) {
                                 // Parse the SSE chunk into stream events
-                                for event in parse_sse_chunk(
+                                for mut event in parse_sse_chunk(
                                     &chunk_json,
                                     &mut content_index,
                                     &mut text_started,
@@ -915,6 +915,19 @@ impl LlmClient for DeepSeekClient {
                                     &mut tool_indices,
                                     is_reasoning_model,
                                 ) {
+                                    // Stamp the client-side replay-token estimate
+                                    // onto the final usage so the UI can surface
+                                    // it (#30). We compute it pre-request and
+                                    // overlay it on the server-reported usage at
+                                    // stream completion.
+                                    if let Some(tokens) = replay_input_tokens
+                                        && let StreamEvent::MessageDelta {
+                                            usage: Some(usage),
+                                            ..
+                                        } = &mut event
+                                    {
+                                        usage.reasoning_replay_tokens = Some(tokens);
+                                    }
                                     yield Ok(event);
                                 }
                             }
@@ -1690,13 +1703,15 @@ fn map_tool_choice_for_chat(choice: &Value) -> Option<Value> {
 /// budget is being spent re-sending prior thinking traces (V4 §5.1.1
 /// "Interleaved Thinking" requires the full trace to be replayed across user
 /// message boundaries in tool-calling sessions).
-fn sanitize_thinking_mode_messages(body: &mut Value, model: &str, effort: Option<&str>) {
+fn sanitize_thinking_mode_messages(
+    body: &mut Value,
+    model: &str,
+    effort: Option<&str>,
+) -> Option<u32> {
     if !should_replay_reasoning_content(model, effort) {
-        return;
+        return None;
     }
-    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
-        return;
-    };
+    let messages = body.get_mut("messages").and_then(Value::as_array_mut)?;
     let mut substitutions: u32 = 0;
     let mut replay_chars: u64 = 0;
     let mut replay_messages: u32 = 0;
@@ -1728,14 +1743,16 @@ fn sanitize_thinking_mode_messages(body: &mut Value, model: &str, effort: Option
             "Final sanitizer: {substitutions} assistant message(s) needed reasoning_content placeholder",
         ));
     }
-    if replay_messages > 0 {
-        // ~4 chars/token is the standard rough estimate; DeepSeek tokens skew
-        // a touch shorter on Chinese/code but this is order-of-magnitude info.
-        let approx_tokens = replay_chars / 4;
-        logging::info(format!(
-            "Reasoning-content replay: {replay_messages} assistant message(s), ~{approx_tokens} input tokens ({replay_chars} chars) being re-sent in this request",
-        ));
+    if replay_messages == 0 {
+        return None;
     }
+    // ~4 chars/token is the standard rough estimate; DeepSeek tokens skew
+    // a touch shorter on Chinese/code but this is order-of-magnitude info.
+    let approx_tokens = (replay_chars / 4).min(u64::from(u32::MAX)) as u32;
+    logging::info(format!(
+        "Reasoning-content replay: {replay_messages} assistant message(s), ~{approx_tokens} input tokens ({replay_chars} chars) being re-sent in this request",
+    ));
+    Some(approx_tokens)
 }
 
 /// Sums the byte length of `reasoning_content` across all assistant messages in
@@ -2034,6 +2051,7 @@ fn parse_usage(usage: Option<&Value>) -> Usage {
         prompt_cache_hit_tokens,
         prompt_cache_miss_tokens,
         reasoning_tokens,
+        reasoning_replay_tokens: None,
         server_tool_use,
     }
 }
@@ -3463,7 +3481,11 @@ mod tests {
             ]
         });
 
-        sanitize_thinking_mode_messages(&mut body, "deepseek-v4-pro", Some("max"));
+        let approx_tokens =
+            sanitize_thinking_mode_messages(&mut body, "deepseek-v4-pro", Some("max"))
+                .expect("multi-turn thinking-mode conversation should report replay tokens");
+        // ~4 chars/token; 46 bytes of reasoning -> 11 tokens.
+        assert_eq!(approx_tokens, 11);
 
         let chars = count_reasoning_replay_chars(&body);
         // "I need to call tool A first." (28) + "Now I call tool B." (18) = 46
@@ -3481,6 +3503,21 @@ mod tests {
             })
             .count();
         assert_eq!(assistant_with_reasoning, 2);
+    }
+
+    /// Issue #30: when no thinking-mode replay applies (non-thinking model or
+    /// empty conversation), the sanitizer returns `None` so the footer chip
+    /// stays hidden.
+    #[test]
+    fn sanitize_thinking_mode_returns_none_for_non_thinking_model() {
+        let mut body = json!({
+            "model": "deepseek-chat",
+            "messages": [
+                { "role": "user", "content": "hi" }
+            ]
+        });
+        let result = sanitize_thinking_mode_messages(&mut body, "deepseek-chat", None);
+        assert!(result.is_none());
     }
 
     #[test]

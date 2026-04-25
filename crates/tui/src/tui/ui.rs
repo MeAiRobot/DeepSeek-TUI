@@ -16,6 +16,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use ignore::WalkBuilder;
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
@@ -164,6 +165,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
                 app.last_completion_tokens = None;
                 app.last_prompt_cache_hit_tokens = None;
                 app.last_prompt_cache_miss_tokens = None;
+                app.last_reasoning_replay_tokens = None;
                 if let Some(prompt) = saved.system_prompt {
                     app.system_prompt = Some(SystemPrompt::Text(prompt));
                 }
@@ -540,6 +542,7 @@ async fn run_event_loop(
                         app.last_completion_tokens = Some(usage.output_tokens);
                         app.last_prompt_cache_hit_tokens = usage.prompt_cache_hit_tokens;
                         app.last_prompt_cache_miss_tokens = usage.prompt_cache_miss_tokens;
+                        app.last_reasoning_replay_tokens = usage.reasoning_replay_tokens;
                         if let Some(error) = error {
                             app.status_message = Some(format!("Turn failed: {error}"));
                         }
@@ -1266,6 +1269,9 @@ async fn run_event_loop(
                     if try_autocomplete_slash_command(app) {
                         continue;
                     }
+                    if try_autocomplete_file_mention(app) {
+                        continue;
+                    }
                     app.cycle_mode();
                 }
                 KeyCode::BackTab => {
@@ -1608,6 +1614,167 @@ fn try_autocomplete_slash_command(app: &mut App) -> bool {
         .join(", ");
     app.status_message = Some(format!("Suggestions: {preview}"));
     true
+}
+
+/// Maximum file-mention completion candidates to consider per keypress. Caps
+/// the cost of walking large workspaces; subsequent keystrokes narrow further.
+const FILE_MENTION_COMPLETION_LIMIT: usize = 64;
+
+/// Maximum directory depth walked when completing a file mention. Mirrors the
+/// existing `project_tree` cutoff and keeps Tab snappy in deep monorepos.
+const FILE_MENTION_COMPLETION_DEPTH: usize = 6;
+
+/// If the cursor sits inside a `@<partial>` token in the input, return the
+/// byte offset where the `@` starts (so we can splice in a completion) and
+/// the partial path the user has typed so far. The token stops at whitespace
+/// or the end of input. Returns `None` when the cursor is outside any mention
+/// or the token is empty (`@` with nothing after it).
+fn partial_file_mention_at_cursor(input: &str, cursor_chars: usize) -> Option<(usize, String)> {
+    let chars: Vec<char> = input.chars().collect();
+    if cursor_chars > chars.len() {
+        return None;
+    }
+    // Walk left from the cursor until we find an `@` or a whitespace; if
+    // whitespace comes first the cursor isn't inside a mention.
+    let mut start_chars = cursor_chars;
+    while start_chars > 0 {
+        let prev = chars[start_chars - 1];
+        if prev == '@' {
+            start_chars -= 1;
+            break;
+        }
+        if prev.is_whitespace() {
+            return None;
+        }
+        start_chars -= 1;
+    }
+    if start_chars == cursor_chars || chars.get(start_chars) != Some(&'@') {
+        return None;
+    }
+    // Confirm the `@` itself is at a valid mention boundary.
+    if !is_file_mention_start(&chars, start_chars) {
+        return None;
+    }
+    // Consume from the `@` to the next whitespace (the end of the token).
+    let mut end_chars = start_chars + 1;
+    while end_chars < chars.len() && !chars[end_chars].is_whitespace() {
+        end_chars += 1;
+    }
+    let partial: String = chars[start_chars + 1..end_chars].iter().collect();
+    let byte_start: usize = chars[..start_chars].iter().map(|c| c.len_utf8()).sum();
+    Some((byte_start, partial))
+}
+
+/// Walk the workspace and return relative paths whose representation matches
+/// the partial mention. A file matches when its case-insensitive relative
+/// path either starts with the partial or contains it as a substring; the
+/// former rank earlier so a partial like `docs/de` resolves to
+/// `docs/deepseek_v4.pdf` before any path that merely contains those bytes.
+fn find_file_mention_completions(workspace: &Path, partial: &str, limit: usize) -> Vec<String> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let needle = partial.to_lowercase();
+    let mut prefix_hits: Vec<String> = Vec::new();
+    let mut substring_hits: Vec<String> = Vec::new();
+
+    let mut builder = WalkBuilder::new(workspace);
+    builder
+        .hidden(true)
+        .follow_links(false)
+        .max_depth(Some(FILE_MENTION_COMPLETION_DEPTH));
+
+    for entry in builder.build().flatten() {
+        if prefix_hits.len() + substring_hits.len() >= limit {
+            break;
+        }
+        let path = entry.path();
+        let Ok(rel) = path.strip_prefix(workspace) else {
+            continue;
+        };
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+        if rel_str.is_empty() {
+            continue;
+        }
+        let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
+        let candidate = if is_dir {
+            format!("{rel_str}/")
+        } else {
+            rel_str.clone()
+        };
+        let lower = candidate.to_lowercase();
+        if needle.is_empty() || lower.starts_with(&needle) {
+            prefix_hits.push(candidate);
+        } else if lower.contains(&needle) {
+            substring_hits.push(candidate);
+        }
+    }
+
+    prefix_hits.sort();
+    substring_hits.sort();
+    prefix_hits.extend(substring_hits);
+    prefix_hits.truncate(limit);
+    prefix_hits
+}
+
+/// Tab-completion handler for `@file` mentions. Mirrors the slash-command
+/// flow: a single match is applied directly; multiple matches with a longer
+/// shared prefix extend the partial; otherwise the first few candidates are
+/// surfaced via the status line. Returns true when the input was modified or
+/// a suggestion was offered, so the caller can short-circuit other handlers.
+fn try_autocomplete_file_mention(app: &mut App) -> bool {
+    let Some((byte_start, partial)) =
+        partial_file_mention_at_cursor(&app.input, app.cursor_position)
+    else {
+        return false;
+    };
+    let workspace = app.workspace.clone();
+    let candidates =
+        find_file_mention_completions(&workspace, &partial, FILE_MENTION_COMPLETION_LIMIT);
+    if candidates.is_empty() {
+        app.status_message = Some(format!("No files match @{partial}"));
+        return true;
+    }
+    if candidates.len() == 1 {
+        replace_file_mention(app, byte_start, &partial, &candidates[0]);
+        app.status_message = Some(format!("Attached @{}", candidates[0]));
+        return true;
+    }
+    let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
+    let shared = longest_common_prefix(&candidate_refs);
+    if shared.len() > partial.len() {
+        replace_file_mention(app, byte_start, &partial, shared);
+        app.status_message = Some(format!("@{shared}…"));
+        return true;
+    }
+    let preview = candidates
+        .iter()
+        .take(5)
+        .map(|c| format!("@{c}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    app.status_message = Some(format!("Matches: {preview}"));
+    true
+}
+
+/// Splice a completion into the input, replacing the `@<partial>` token at
+/// `byte_start` with `@<replacement>`. Cursor moves to the end of the new
+/// token so further keystrokes extend (or escape via space) naturally.
+fn replace_file_mention(app: &mut App, byte_start: usize, partial: &str, replacement: &str) {
+    let original_token_len = '@'.len_utf8() + partial.len();
+    let original_token_end = byte_start + original_token_len;
+    let mut new_input =
+        String::with_capacity(app.input.len() - original_token_len + 1 + replacement.len());
+    new_input.push_str(&app.input[..byte_start]);
+    new_input.push('@');
+    new_input.push_str(replacement);
+    if original_token_end < app.input.len() {
+        new_input.push_str(&app.input[original_token_end..]);
+    }
+    let new_cursor_chars =
+        app.input[..byte_start].chars().count() + 1 + replacement.chars().count();
+    app.input = new_input;
+    app.cursor_position = new_cursor_chars;
 }
 
 fn longest_common_prefix<'a>(values: &[&'a str]) -> &'a str {
@@ -2152,6 +2319,7 @@ async fn dispatch_user_message(
     app.last_completion_tokens = None;
     app.last_prompt_cache_hit_tokens = None;
     app.last_prompt_cache_miss_tokens = None;
+    app.last_reasoning_replay_tokens = None;
     // Persist immediately so abrupt termination can recover this in-flight turn.
     persist_checkpoint(app);
 
@@ -3592,8 +3760,9 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
 fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
     // Context % is already shown in the header signal bar — don't
     // duplicate it in the footer. The footer carries unique info only:
-    // coherence state, cache hit rate, and session cost.
+    // coherence state, reasoning replay tokens, cache hit rate, and session cost.
     let coherence_spans = footer_coherence_spans(app);
+    let replay_spans = footer_reasoning_replay_spans(app);
     let cache_spans = footer_cache_spans(app);
     let cost_spans = if app.session_cost > 0.001 {
         vec![Span::styled(
@@ -3604,11 +3773,12 @@ fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
         Vec::new()
     };
 
-    let parts: Vec<&Vec<Span<'static>>> = [&coherence_spans, &cache_spans, &cost_spans]
-        .iter()
-        .filter(|spans| !spans.is_empty())
-        .copied()
-        .collect();
+    let parts: Vec<&Vec<Span<'static>>> =
+        [&coherence_spans, &replay_spans, &cache_spans, &cost_spans]
+            .iter()
+            .filter(|spans| !spans.is_empty())
+            .copied()
+            .collect();
 
     // Try to fit as many parts as possible, dropping from the end.
     for end in (0..=parts.len()).rev() {
@@ -3658,6 +3828,30 @@ fn footer_cache_spans(app: &App) -> Vec<Span<'static>> {
         format!("cache {:.0}%", percent),
         Style::default().fg(palette::TEXT_MUTED),
     )]
+}
+
+/// Render a footer chip showing the size of the `reasoning_content` block
+/// replayed on the most recent thinking-mode tool-calling turn (#30).
+///
+/// Stays hidden when the count is zero (non-thinking models, first turn, or
+/// turns with no tool calls). When replay tokens dominate the input budget
+/// (>50%), the chip turns warning-coloured so users notice that thinking
+/// replay is the main consumer of context.
+fn footer_reasoning_replay_spans(app: &App) -> Vec<Span<'static>> {
+    let Some(replay) = app.last_reasoning_replay_tokens else {
+        return Vec::new();
+    };
+    if replay == 0 {
+        return Vec::new();
+    }
+    let label = format!("rsn {}", format_token_count_compact(u64::from(replay)));
+    let color = match app.last_prompt_tokens {
+        Some(input) if input > 0 && f64::from(replay) / f64::from(input) > 0.5 => {
+            palette::STATUS_WARNING
+        }
+        _ => palette::TEXT_MUTED,
+    };
+    vec![Span::styled(label, Style::default().fg(color))]
 }
 
 fn footer_toast_spans(

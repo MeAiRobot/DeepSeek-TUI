@@ -506,6 +506,10 @@ pub struct App {
     pub last_prompt_cache_hit_tokens: Option<u32>,
     /// DeepSeek context-cache miss tokens from the last API call.
     pub last_prompt_cache_miss_tokens: Option<u32>,
+    /// Approximate input tokens spent re-sending prior `reasoning_content` on
+    /// the last thinking-mode tool-calling turn (V4 §5.1.1 "Interleaved
+    /// Thinking"). Computed client-side at ~4 chars/token.
+    pub last_reasoning_replay_tokens: Option<u32>,
     /// Cached git context snapshot for the footer.
     pub workspace_context: Option<String>,
     /// Timestamp for cached workspace context.
@@ -778,6 +782,7 @@ impl App {
             last_completion_tokens: None,
             last_prompt_cache_hit_tokens: None,
             last_prompt_cache_miss_tokens: None,
+            last_reasoning_replay_tokens: None,
             workspace_context: None,
             workspace_context_refreshed_at: None,
             task_panel: Vec::new(),

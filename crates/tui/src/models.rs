@@ -191,6 +191,12 @@ pub struct Usage {
     pub prompt_cache_miss_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<u32>,
+    /// Approximate input tokens spent re-sending prior `reasoning_content`
+    /// across user-message boundaries in DeepSeek V4 thinking-mode tool-calling
+    /// turns (V4 §5.1.1 "Interleaved Thinking"). Estimated client-side at
+    /// ~4 chars/token from the outgoing request body, before the model sees it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_replay_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_tool_use: Option<ServerToolUsage>,
 }

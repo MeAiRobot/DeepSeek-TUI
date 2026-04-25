@@ -452,6 +452,34 @@ fn footer_auxiliary_spans_show_cache_and_cost_when_roomy() {
 }
 
 #[test]
+fn footer_auxiliary_spans_show_reasoning_replay_chip() {
+    // Issue #30: when a thinking-mode tool-calling turn replays prior
+    // reasoning_content, the footer surfaces the approximate input-token
+    // cost so users can see why their context filled up.
+    let mut app = create_test_app();
+    app.last_prompt_tokens = Some(48_000);
+    app.last_reasoning_replay_tokens = Some(8_200);
+
+    let spans = footer_auxiliary_spans(&app, 64);
+    let text = spans_text(&spans);
+    assert!(
+        text.contains("rsn 8.2k"),
+        "expected replay chip, got {text:?}"
+    );
+}
+
+#[test]
+fn footer_auxiliary_spans_hide_reasoning_replay_when_zero() {
+    let mut app = create_test_app();
+    app.last_prompt_tokens = Some(48_000);
+    app.last_reasoning_replay_tokens = Some(0);
+
+    let spans = footer_auxiliary_spans(&app, 64);
+    let text = spans_text(&spans);
+    assert!(!text.contains("rsn"), "zero replay must not render chip");
+}
+
+#[test]
 fn context_usage_snapshot_prefers_estimate_when_reported_exceeds_window() {
     let mut app = create_test_app();
     app.last_prompt_tokens = Some(1_200_000);
@@ -894,4 +922,126 @@ fn jump_to_adjacent_tool_cell_finds_next_and_previous() {
         &mut app,
         SearchDirection::Backward
     ));
+}
+
+#[test]
+fn partial_file_mention_finds_token_under_cursor() {
+    // Cursor in middle of `@docs/de` should be detected as a partial mention.
+    let input = "look at @docs/de please";
+    let cursor = "look at @docs/de".chars().count();
+    let (start, partial) = partial_file_mention_at_cursor(input, cursor)
+        .expect("cursor inside mention should yield a partial");
+    assert_eq!(start, "look at ".len(), "byte_start of @ in input");
+    assert_eq!(partial, "docs/de");
+}
+
+#[test]
+fn partial_file_mention_returns_none_when_cursor_outside() {
+    let input = "look at @docs/de please";
+    // Cursor after "please" — past the whitespace following the mention.
+    let cursor = input.chars().count();
+    assert!(partial_file_mention_at_cursor(input, cursor).is_none());
+
+    // Cursor before the `@` — not inside any mention either.
+    let early_cursor = "look".chars().count();
+    assert!(partial_file_mention_at_cursor(input, early_cursor).is_none());
+}
+
+#[test]
+fn partial_file_mention_handles_email_addresses() {
+    // The `@` in `user@example.com` is preceded by a non-boundary char so
+    // it's not treated as a file-mention.
+    let input = "ping user@example.com now";
+    let cursor = "ping user@example.com".chars().count();
+    assert!(partial_file_mention_at_cursor(input, cursor).is_none());
+}
+
+#[test]
+fn file_mention_completion_finds_unique_match() {
+    let tmpdir = TempDir::new().expect("tempdir");
+    std::fs::write(tmpdir.path().join("README.md"), "readme").unwrap();
+    std::fs::create_dir_all(tmpdir.path().join("docs")).unwrap();
+    std::fs::write(tmpdir.path().join("docs/deepseek_v4.pdf"), b"%PDF-").unwrap();
+
+    let matches = find_file_mention_completions(tmpdir.path(), "docs/de", 16);
+    assert_eq!(matches, vec!["docs/deepseek_v4.pdf".to_string()]);
+}
+
+#[test]
+fn file_mention_completion_ranks_prefix_before_substring() {
+    let tmpdir = TempDir::new().expect("tempdir");
+    std::fs::write(tmpdir.path().join("README.md"), "x").unwrap();
+    std::fs::create_dir_all(tmpdir.path().join("nested")).unwrap();
+    std::fs::write(tmpdir.path().join("nested/README.md"), "x").unwrap();
+
+    let matches = find_file_mention_completions(tmpdir.path(), "README", 16);
+    // Top-level README (prefix match) outranks the nested one (substring).
+    assert_eq!(matches.first().map(String::as_str), Some("README.md"));
+}
+
+#[test]
+fn try_autocomplete_file_mention_unique_replaces_partial() {
+    let tmpdir = TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(tmpdir.path().join("docs")).unwrap();
+    std::fs::write(tmpdir.path().join("docs/deepseek_v4.pdf"), b"%PDF-").unwrap();
+
+    let mut app = create_test_app();
+    app.workspace = tmpdir.path().to_path_buf();
+    app.input = "summarize @docs/de".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    assert!(try_autocomplete_file_mention(&mut app));
+    assert_eq!(app.input, "summarize @docs/deepseek_v4.pdf");
+    assert_eq!(app.cursor_position, app.input.chars().count());
+}
+
+#[test]
+fn try_autocomplete_file_mention_extends_to_common_prefix() {
+    let tmpdir = TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(tmpdir.path().join("crates/tui")).unwrap();
+    std::fs::write(tmpdir.path().join("crates/tui/lib.rs"), "//").unwrap();
+    std::fs::write(tmpdir.path().join("crates/tui/main.rs"), "//").unwrap();
+
+    let mut app = create_test_app();
+    app.workspace = tmpdir.path().to_path_buf();
+    app.input = "@crates/tui/".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    assert!(try_autocomplete_file_mention(&mut app));
+    // Both files share the `crates/tui/` prefix and one more letter is
+    // not unique (`l` vs `m`), so the partial extends to the common prefix
+    // unchanged here, with the status surfacing both candidates.
+    assert!(app.input.starts_with("@crates/tui/"));
+    let preview = app
+        .status_message
+        .as_deref()
+        .expect("status message should describe candidates");
+    assert!(preview.contains("@crates/tui/lib.rs"));
+    assert!(preview.contains("@crates/tui/main.rs"));
+}
+
+#[test]
+fn try_autocomplete_file_mention_no_match_reports_status() {
+    let tmpdir = TempDir::new().expect("tempdir");
+    std::fs::write(tmpdir.path().join("README.md"), "x").unwrap();
+
+    let mut app = create_test_app();
+    app.workspace = tmpdir.path().to_path_buf();
+    app.input = "@nonexistent_xyz".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    assert!(try_autocomplete_file_mention(&mut app));
+    assert_eq!(app.input, "@nonexistent_xyz");
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("No files match @nonexistent_xyz")
+    );
+}
+
+#[test]
+fn try_autocomplete_file_mention_returns_false_outside_mention() {
+    let mut app = create_test_app();
+    app.input = "no mention here".to_string();
+    app.cursor_position = app.input.chars().count();
+    assert!(!try_autocomplete_file_mention(&mut app));
 }
