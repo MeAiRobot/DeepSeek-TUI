@@ -10,6 +10,8 @@ npm i -g deepseek-tui
 [![crates.io](https://img.shields.io/crates/v/deepseek-tui)](https://crates.io/crates/deepseek-tui)
 [![npm](https://img.shields.io/npm/v/deepseek-tui)](https://www.npmjs.com/package/deepseek-tui)
 
+![DeepSeek TUI screenshot](assets/screenshot.png)
+
 ---
 
 ## What is it?
