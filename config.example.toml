@@ -7,21 +7,19 @@
 # See `docs/CONFIGURATION.md` for how config is loaded (profiles, env overrides, etc.).
 
 # ─────────────────────────────────────────────────────────────────────────────────
-# API Keys
+# Active provider + DeepSeek defaults
 # ─────────────────────────────────────────────────────────────────────────────────
+# Choose which provider to use by default. Per-provider credentials live in the
+# `[providers.deepseek]` and `[providers.nvidia_nim]` sections near the bottom of
+# this file — keeping both stored at once means `/provider deepseek` and
+# `/provider nvidia-nim` (or `--provider nvidia-nim`) toggle without having to
+# re-enter keys. Top-level `api_key` / `base_url` are still read as DeepSeek
+# defaults when `[providers.deepseek]` is absent (backward compatibility).
 provider = "deepseek" # deepseek | nvidia-nim
 api_key = "YOUR_DEEPSEEK_API_KEY" # must be non-empty
-
-# ─────────────────────────────────────────────────────────────────────────────────
-# Base URLs
-# ─────────────────────────────────────────────────────────────────────────────────
 base_url = "https://api.deepseek.com"
 # base_url = "https://api.deepseeki.com"         # China users
 # base_url = "https://api.deepseek.com/beta"     # DeepSeek beta features such as strict tool mode
-# For NVIDIA NIM-hosted DeepSeek:
-# provider = "nvidia-nim"
-# api_key = "YOUR_NVIDIA_API_KEY"
-# base_url = "https://integrate.api.nvidia.com/v1"
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Default Models
@@ -69,6 +67,28 @@ max_subagents = 5 # optional (1-20)
 # Optional managed policy paths (defaults to /etc/deepseek/*.toml on unix):
 # managed_config_path = "/etc/deepseek/managed_config.toml"
 # requirements_path = "/etc/deepseek/requirements.toml"
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Per-provider credentials (peer providers — NIM is first-class, not a flag)
+# ─────────────────────────────────────────────────────────────────────────────────
+# Both providers can be stored at once; `provider = "..."` (top of file) or
+# `/provider deepseek` / `/provider nvidia-nim` switches between them without
+# having to re-enter keys. Env vars override anything set here:
+#   DeepSeek: DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL
+#   NIM:      NVIDIA_API_KEY (or NVIDIA_NIM_API_KEY), NIM_BASE_URL
+#             (or NVIDIA_NIM_BASE_URL / NVIDIA_BASE_URL), NVIDIA_NIM_MODEL
+
+# DeepSeek Platform (https://platform.deepseek.com)
+[providers.deepseek]
+# api_key = "YOUR_DEEPSEEK_API_KEY"
+# base_url = "https://api.deepseek.com"
+# model = "deepseek-v4-pro"
+
+# NVIDIA NIM-hosted DeepSeek V4 (https://build.nvidia.com)
+[providers.nvidia_nim]
+# api_key = "YOUR_NVIDIA_API_KEY"
+# base_url = "https://integrate.api.nvidia.com/v1"
+# model = "deepseek-ai/deepseek-v4-pro"     # or deepseek-ai/deepseek-v4-flash
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # TUI

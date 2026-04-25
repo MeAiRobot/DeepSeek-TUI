@@ -1118,10 +1118,25 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
             "  {} api_key: set via config",
             "✓".truecolor(aqua_r, aqua_g, aqua_b)
         ),
-        ApiKeySource::Missing => println!(
-            "  {} api_key: missing  (set DEEPSEEK_API_KEY or run `deepseek login`)",
-            "✗".truecolor(red_r, red_g, red_b)
-        ),
+        ApiKeySource::Missing => {
+            let (env_var, login_hint) = match config.api_provider() {
+                crate::config::ApiProvider::NvidiaNim => (
+                    "NVIDIA_API_KEY",
+                    "deepseek auth set --provider nvidia-nim --api-key \"...\"",
+                ),
+                crate::config::ApiProvider::Deepseek => {
+                    ("DEEPSEEK_API_KEY", "deepseek login --api-key \"...\"")
+                }
+            };
+            println!(
+                "  {} api_key: missing  (set {env_var} or `[providers.{}].api_key` in ~/.deepseek/config.toml; or run `{login_hint}`)",
+                "✗".truecolor(red_r, red_g, red_b),
+                match config.api_provider() {
+                    crate::config::ApiProvider::NvidiaNim => "nvidia_nim",
+                    crate::config::ApiProvider::Deepseek => "deepseek",
+                }
+            );
+        }
     }
     println!(
         "  · base_url: {}",
