@@ -28,6 +28,19 @@ const THINKING_SUMMARY_LINE_LIMIT: usize = 4;
 const TOOL_DONE_SYMBOL: &str = "•";
 const TOOL_FAILED_SYMBOL: &str = "•";
 
+/// Render mode controlling whether tool/thinking cells render their compact
+/// "live" form (with caps and collapsed reasoning) or their full transcript
+/// form (uncapped, suitable for the pager / clipboard / message export).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderMode {
+    /// Live in-stream view: thinking is collapsed to a summary, tool output is
+    /// truncated with a "press v for details" affordance.
+    Live,
+    /// Full transcript view: every line of reasoning and tool output is
+    /// emitted, no caps, no affordance.
+    Transcript,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ThinkingVisualState {
     Live,
@@ -81,6 +94,13 @@ impl Default for TranscriptRenderOptions {
 
 impl HistoryCell {
     /// Render the cell into a set of terminal lines.
+    ///
+    /// This is the live-display path used by widgets that don't already pass
+    /// `TranscriptRenderOptions`. Tool output is capped, but thinking is shown
+    /// in full because callers using bare `lines()` historically expected the
+    /// uncollapsed body. For the in-stream transcript view prefer
+    /// `lines_with_options`; for the pager / clipboard prefer
+    /// `transcript_lines`.
     pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
         match self {
             HistoryCell::User { content } => render_message(
@@ -158,6 +178,35 @@ impl HistoryCell {
             HistoryCell::User { .. }
             | HistoryCell::Assistant { .. }
             | HistoryCell::System { .. } => self.lines(width),
+        }
+    }
+
+    /// Render the cell in transcript mode: full content, no caps, no
+    /// "press v for details" affordances.
+    ///
+    /// Use this for the pager (`v` / `Ctrl+O`), clipboard exports, and any
+    /// surface that wants the complete body rather than the live summary.
+    /// For most variants (User / Assistant / System) this matches `lines()`;
+    /// `Thinking` and `Tool` are where the live and transcript surfaces
+    /// diverge.
+    pub fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
+        match self {
+            HistoryCell::User { .. }
+            | HistoryCell::Assistant { .. }
+            | HistoryCell::System { .. } => self.lines(width),
+            HistoryCell::Thinking {
+                content,
+                streaming,
+                duration_secs,
+            } => render_thinking(
+                content,
+                width,
+                *streaming,
+                *duration_secs,
+                /*collapsed*/ false,
+                /*low_motion*/ false,
+            ),
+            HistoryCell::Tool(cell) => cell.transcript_lines(width),
         }
     }
 
@@ -274,14 +323,25 @@ impl ToolCell {
     }
 
     pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
+        self.render(width, low_motion, RenderMode::Live)
+    }
+
+    /// Full-content rendering for the pager / clipboard. Tool output that
+    /// would be capped + suffixed with "press v for details" in the live view
+    /// is emitted in full here.
+    pub fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
+        self.render(width, /*low_motion*/ false, RenderMode::Transcript)
+    }
+
+    fn render(&self, width: u16, low_motion: bool, mode: RenderMode) -> Vec<Line<'static>> {
         match self {
-            ToolCell::Exec(cell) => cell.lines_with_motion(width, low_motion),
+            ToolCell::Exec(cell) => cell.render(width, low_motion, mode),
             ToolCell::Exploring(cell) => cell.lines_with_motion(width, low_motion),
             ToolCell::PlanUpdate(cell) => cell.lines_with_motion(width, low_motion),
-            ToolCell::PatchSummary(cell) => cell.lines_with_motion(width, low_motion),
-            ToolCell::Review(cell) => cell.lines_with_motion(width, low_motion),
+            ToolCell::PatchSummary(cell) => cell.render(width, low_motion, mode),
+            ToolCell::Review(cell) => cell.render(width, low_motion, mode),
             ToolCell::DiffPreview(cell) => cell.lines_with_motion(width, low_motion),
-            ToolCell::Mcp(cell) => cell.lines_with_motion(width, low_motion),
+            ToolCell::Mcp(cell) => cell.render(width, low_motion, mode),
             ToolCell::ViewImage(cell) => cell.lines_with_motion(width, low_motion),
             ToolCell::WebSearch(cell) => cell.lines_with_motion(width, low_motion),
             ToolCell::Generic(cell) => cell.lines_with_motion(width, low_motion),
@@ -310,8 +370,18 @@ pub struct ExecCell {
 }
 
 impl ExecCell {
-    /// Render the execution cell into lines.
+    /// Render the execution cell into lines (live view, capped output).
+    #[cfg(test)]
     pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
+        self.render(width, low_motion, RenderMode::Live)
+    }
+
+    pub(super) fn render(
+        &self,
+        width: u16,
+        low_motion: bool,
+        mode: RenderMode,
+    ) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         lines.push(render_tool_header(
             "Shell",
@@ -337,12 +407,17 @@ impl ExecCell {
                 width,
             ));
         } else {
-            lines.extend(render_command(&self.command, width));
+            lines.extend(render_command_mode(&self.command, width, mode));
         }
 
         if self.interaction.is_none() {
             if let Some(output) = self.output.as_ref() {
-                lines.extend(render_exec_output(output, width, TOOL_OUTPUT_LINE_LIMIT));
+                lines.extend(render_exec_output_mode(
+                    output,
+                    width,
+                    TOOL_OUTPUT_LINE_LIMIT,
+                    mode,
+                ));
             } else if self.status != ToolStatus::Running {
                 lines.push(Line::from(Span::styled(
                     "  (no output)",
@@ -495,8 +570,12 @@ pub struct PatchSummaryCell {
 }
 
 impl PatchSummaryCell {
-    /// Render the patch summary cell into lines.
-    pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
+    pub(super) fn render(
+        &self,
+        width: u16,
+        low_motion: bool,
+        mode: RenderMode,
+    ) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         lines.push(render_tool_header(
             "Patch",
@@ -511,13 +590,19 @@ impl PatchSummaryCell {
             tool_value_style(),
             width,
         ));
-        lines.extend(render_tool_output(
+        lines.extend(render_tool_output_mode(
             &self.summary,
             width,
             TOOL_COMMAND_LINE_LIMIT,
+            mode,
         ));
         if let Some(error) = self.error.as_ref() {
-            lines.extend(render_tool_output(error, width, TOOL_COMMAND_LINE_LIMIT));
+            lines.extend(render_tool_output_mode(
+                error,
+                width,
+                TOOL_COMMAND_LINE_LIMIT,
+                mode,
+            ));
         }
         lines
     }
@@ -533,7 +618,12 @@ pub struct ReviewCell {
 }
 
 impl ReviewCell {
-    pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
+    pub(super) fn render(
+        &self,
+        width: u16,
+        low_motion: bool,
+        mode: RenderMode,
+    ) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         lines.push(render_tool_header(
             "Review",
@@ -557,7 +647,12 @@ impl ReviewCell {
         }
 
         if let Some(error) = self.error.as_ref() {
-            lines.extend(render_tool_output(error, width, TOOL_COMMAND_LINE_LIMIT));
+            lines.extend(render_tool_output_mode(
+                error,
+                width,
+                TOOL_COMMAND_LINE_LIMIT,
+                mode,
+            ));
             return lines;
         }
 
@@ -687,8 +782,12 @@ pub struct McpToolCell {
 }
 
 impl McpToolCell {
-    /// Render the MCP tool cell into lines.
-    pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
+    pub(super) fn render(
+        &self,
+        width: u16,
+        low_motion: bool,
+        mode: RenderMode,
+    ) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         lines.push(render_tool_header(
             "Tool",
@@ -714,7 +813,12 @@ impl McpToolCell {
         }
 
         if let Some(content) = self.content.as_ref() {
-            lines.extend(render_tool_output(content, width, TOOL_COMMAND_LINE_LIMIT));
+            lines.extend(render_tool_output_mode(
+                content,
+                width,
+                TOOL_COMMAND_LINE_LIMIT,
+                mode,
+            ));
         }
         lines
     }
@@ -1238,13 +1342,17 @@ fn render_message(
     lines
 }
 
-fn render_command(command: &str, width: u16) -> Vec<Line<'static>> {
+fn render_command_mode(command: &str, width: u16, mode: RenderMode) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
+    let cap = match mode {
+        RenderMode::Live => TOOL_COMMAND_LINE_LIMIT,
+        RenderMode::Transcript => usize::MAX,
+    };
     for (count, chunk) in wrap_text(command, width.saturating_sub(4).max(1) as usize)
         .into_iter()
         .enumerate()
     {
-        if count >= TOOL_COMMAND_LINE_LIMIT {
+        if count >= cap {
             lines.push(details_affordance_line(
                 "command clipped; press v for details",
                 Style::default().fg(palette::TEXT_MUTED),
@@ -1265,7 +1373,12 @@ fn render_compact_kv(label: &str, value: &str, style: Style, width: u16) -> Vec<
     render_card_detail_line(Some(label.trim_end_matches(':')), value, style, width)
 }
 
-fn render_tool_output(output: &str, width: u16, line_limit: usize) -> Vec<Line<'static>> {
+fn render_tool_output_mode(
+    output: &str,
+    width: u16,
+    line_limit: usize,
+    mode: RenderMode,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if output.trim().is_empty() {
         lines.push(Line::from(Span::styled(
@@ -1279,9 +1392,13 @@ fn render_tool_output(output: &str, width: u16, line_limit: usize) -> Vec<Line<'
         all_lines.extend(wrap_text(line, width.saturating_sub(4).max(1) as usize));
     }
     let total = all_lines.len();
+    let effective_limit = match mode {
+        RenderMode::Live => line_limit,
+        RenderMode::Transcript => usize::MAX,
+    };
     for (idx, line) in all_lines.into_iter().enumerate() {
-        if idx >= line_limit {
-            let omitted = total.saturating_sub(line_limit);
+        if idx >= effective_limit {
+            let omitted = total.saturating_sub(effective_limit);
             if omitted > 0 {
                 lines.push(details_affordance_line(
                     &format!("+{omitted} more lines; press v for details"),
@@ -1318,7 +1435,12 @@ fn format_review_location(path: Option<&String>, line: Option<u32>) -> String {
     }
 }
 
-fn render_exec_output(output: &str, width: u16, line_limit: usize) -> Vec<Line<'static>> {
+fn render_exec_output_mode(
+    output: &str,
+    width: u16,
+    line_limit: usize,
+    mode: RenderMode,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if output.trim().is_empty() {
         lines.push(Line::from(Span::styled(
@@ -1334,6 +1456,21 @@ fn render_exec_output(output: &str, width: u16, line_limit: usize) -> Vec<Line<'
     }
 
     let total = all_lines.len();
+
+    if matches!(mode, RenderMode::Transcript) {
+        // Full-content path: emit every wrapped line with no head/tail split,
+        // no "+N more" affordance.
+        for (idx, line) in all_lines.iter().enumerate() {
+            lines.extend(render_card_detail_line(
+                if idx == 0 { Some("output") } else { None },
+                line,
+                tool_value_style(),
+                width,
+            ));
+        }
+        return lines;
+    }
+
     let head_end = total.min(line_limit);
     for (idx, line) in all_lines[..head_end].iter().enumerate() {
         lines.extend(render_card_detail_line(
@@ -1820,5 +1957,182 @@ mod tests {
         assert!(title_span.style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(state_span.content.as_ref(), "issue");
         assert_eq!(state_span.style.fg, Some(theme.tool_failed_accent));
+    }
+
+    // === display_lines (lines_with_options) vs transcript_lines parity ===
+    //
+    // These lock the contract for CX#8: live view compresses thinking and
+    // caps tool output, transcript view shows the full body. Both surfaces
+    // must contain the first paragraph / first line of the underlying
+    // content so users never lose the lede.
+
+    fn line_text(line: &ratatui::text::Line<'static>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    fn lines_text(lines: &[ratatui::text::Line<'static>]) -> String {
+        lines.iter().map(line_text).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn long_thinking_display_is_shorter_than_transcript() {
+        // Build a multi-paragraph thinking body so the live view has
+        // something to compress. The first paragraph is the lede; both
+        // surfaces must keep it.
+        let body = "First paragraph lede.\n\
+                    Second sentence of the first paragraph.\n\n\
+                    Second paragraph: deeper analysis follows.\n\
+                    More detail in paragraph two.\n\n\
+                    Third paragraph: even more reasoning.\n\
+                    With another line.\n\n\
+                    Fourth paragraph: the conclusion.\n\
+                    And one more line for good measure.";
+        let cell = HistoryCell::Thinking {
+            content: body.to_string(),
+            streaming: false,
+            duration_secs: Some(3.2),
+        };
+
+        let live = cell.lines_with_options(
+            80,
+            TranscriptRenderOptions {
+                low_motion: true,
+                ..TranscriptRenderOptions::default()
+            },
+        );
+        let transcript = cell.transcript_lines(80);
+
+        assert!(
+            live.len() < transcript.len(),
+            "live thinking should compress (live = {} lines, transcript = {} lines)",
+            live.len(),
+            transcript.len()
+        );
+
+        let live_text = lines_text(&live);
+        let transcript_text = lines_text(&transcript);
+
+        assert!(
+            live_text.contains("First paragraph lede"),
+            "live thinking must keep the lede: {live_text}"
+        );
+        assert!(
+            transcript_text.contains("First paragraph lede"),
+            "transcript thinking must keep the lede"
+        );
+        assert!(
+            transcript_text.contains("Fourth paragraph"),
+            "transcript thinking must keep the full body"
+        );
+        assert!(
+            !live_text.contains("Fourth paragraph"),
+            "live thinking must drop the tail when collapsed"
+        );
+        assert!(
+            live_text.contains("press Ctrl+O for full text"),
+            "live thinking must offer the pager affordance"
+        );
+        assert!(
+            !transcript_text.contains("press Ctrl+O for full text"),
+            "transcript thinking must not include the live affordance"
+        );
+    }
+
+    #[test]
+    fn short_thinking_display_equals_transcript() {
+        // A single-line thinking body has nothing to compress; live and
+        // transcript surfaces should agree.
+        let cell = HistoryCell::Thinking {
+            content: "One brief reasoning step.".to_string(),
+            streaming: false,
+            duration_secs: Some(0.4),
+        };
+
+        let live = cell.lines_with_options(
+            80,
+            TranscriptRenderOptions {
+                low_motion: true,
+                ..TranscriptRenderOptions::default()
+            },
+        );
+        let transcript = cell.transcript_lines(80);
+
+        let live_text = lines_text(&live);
+        let transcript_text = lines_text(&transcript);
+
+        assert_eq!(
+            live_text, transcript_text,
+            "short thinking must render identically on both surfaces"
+        );
+        assert!(
+            !live_text.contains("press Ctrl+O for full text"),
+            "short thinking must not show the collapse affordance"
+        );
+    }
+
+    #[test]
+    fn tool_exec_live_caps_output_transcript_does_not() {
+        // Synthesize an exec output that comfortably exceeds the live cap
+        // (TOOL_OUTPUT_LINE_LIMIT = 6). The live view should hit the cap
+        // and emit a "+N more lines; press v for details" affordance; the
+        // transcript view should emit every wrapped line uncapped.
+        let total_output_lines = 30usize;
+        let output = (0..total_output_lines)
+            .map(|i| format!("output line {i:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let cell = HistoryCell::Tool(ToolCell::Exec(ExecCell {
+            command: "noisy_script.sh".to_string(),
+            status: ToolStatus::Success,
+            output: Some(output),
+            started_at: None,
+            duration_ms: Some(120),
+            source: ExecSource::Assistant,
+            interaction: None,
+        }));
+
+        let live = cell.lines_with_options(
+            80,
+            TranscriptRenderOptions {
+                low_motion: true,
+                ..TranscriptRenderOptions::default()
+            },
+        );
+        let transcript = cell.transcript_lines(80);
+
+        let live_text = lines_text(&live);
+        let transcript_text = lines_text(&transcript);
+
+        assert!(
+            live.len() < transcript.len(),
+            "live exec output must be shorter than transcript exec output (live={}, transcript={})",
+            live.len(),
+            transcript.len()
+        );
+        assert!(
+            live_text.contains("press v for details"),
+            "live exec output must surface the pager affordance: {live_text}"
+        );
+        assert!(
+            !transcript_text.contains("press v for details"),
+            "transcript exec output must not include the pager affordance"
+        );
+        // First line is always emitted on both surfaces.
+        assert!(live_text.contains("output line 00"));
+        assert!(transcript_text.contains("output line 00"));
+        // The middle should only appear in the transcript, since the live
+        // view truncates the head/tail around the cap.
+        assert!(
+            transcript_text.contains("output line 15"),
+            "transcript must include the middle of the exec output"
+        );
+        // Last line should appear in both because the live view shows
+        // head + tail around an omission marker.
+        let last = format!("output line {:02}", total_output_lines - 1);
+        assert!(transcript_text.contains(&last));
     }
 }

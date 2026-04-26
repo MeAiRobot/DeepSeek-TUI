@@ -1,4 +1,33 @@
-//! Simple markdown rendering for TUI transcript lines.
+//! Markdown rendering for TUI transcript lines.
+//!
+//! ## Width-independent parse vs width-dependent render (CX#6)
+//!
+//! The previous renderer was a single function `render_markdown(content, width)`
+//! that scanned the source, classified each line (heading / list / code-fence /
+//! paragraph / link), and word-wrapped to `Line<'static>` in one pass. That meant
+//! every terminal resize forced a full re-parse of the source for every visible
+//! cell — wasted work on the streaming cell whose content is changing anyway.
+//!
+//! The codex tui solves this by splitting parse from render. We mirror that:
+//!
+//! * [`parse`] turns the markdown source into a [`ParsedMarkdown`] AST: a vector
+//!   of width-independent [`Block`]s. The block kind already records all the
+//!   classification decisions (heading level, list bullet, code block membership)
+//!   that don't depend on width.
+//! * [`render_parsed`] takes a `ParsedMarkdown` plus a width and a base style and
+//!   produces `Vec<Line<'static>>`. It only does word-wrap and span styling.
+//!
+//! [`render_markdown`] is kept as a thin convenience that does both — useful for
+//! callers (Thinking body, message body) that don't want to manage the cache.
+//!
+//! The transcript cache layer (see `tui/transcript.rs`) caches the parsed AST per
+//! cell and re-runs only the render step on width changes. That makes resize a
+//! re-flow operation rather than a re-parse + re-flow operation.
+
+use std::sync::Arc;
+
+#[cfg(any(test, feature = "perf-counters"))]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -6,9 +35,83 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::palette;
 
-pub fn render_markdown(content: &str, width: u16, base_style: Style) -> Vec<Line<'static>> {
-    let mut out = Vec::new();
-    let width = width.max(1) as usize;
+/// Per-process counter incremented every time [`parse`] runs. Used by tests to
+/// prove that width-only changes hit the cached-AST path and skip parsing.
+///
+/// Available in test builds and behind the `perf-counters` feature flag so
+/// release builds pay no cost.
+#[cfg(any(test, feature = "perf-counters"))]
+static PARSE_INVOCATIONS: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(any(test, feature = "perf-counters"))]
+#[must_use]
+pub fn parse_invocation_count() -> u64 {
+    PARSE_INVOCATIONS.load(Ordering::Relaxed)
+}
+
+#[cfg(any(test, feature = "perf-counters"))]
+pub fn reset_parse_invocation_count() {
+    PARSE_INVOCATIONS.store(0, Ordering::Relaxed);
+}
+
+/// One classified line of markdown source, width-independent.
+///
+/// All decisions that depend only on the source text (heading level, bullet
+/// kind, whether we're inside a fenced code block, paragraph text) are made at
+/// parse time. Width-dependent layout (word-wrap, prefix indent) is deferred to
+/// the render step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Block {
+    /// `# heading text`. Includes the heading level (1..6).
+    Heading { level: usize, text: String },
+    /// A horizontal rule emitted under a level-1 heading.
+    HeadingRule,
+    /// A bullet (`-`/`*`) or ordered (`1.`) list item with its prefix and body.
+    ListItem { bullet: String, text: String },
+    /// A line inside a fenced code block. Fences themselves are dropped.
+    Code { line: String },
+    /// A non-empty paragraph line that may contain inline links.
+    Paragraph { text: String },
+    /// An empty source line, preserved so paragraph spacing survives.
+    Blank,
+}
+
+/// Width-independent parsed-markdown AST for one cell's source.
+///
+/// Wrapped in `Arc` at the cache layer so the cache can hand the same AST to
+/// many render calls without copying.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedMarkdown {
+    blocks: Vec<Block>,
+}
+
+impl ParsedMarkdown {
+    /// Borrow the parsed blocks (mostly useful for tests).
+    #[must_use]
+    pub fn blocks(&self) -> &[Block] {
+        &self.blocks
+    }
+
+    /// Whether the parse was empty (no source at all).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.blocks.is_empty()
+    }
+}
+
+/// Parse markdown source into a width-independent block AST.
+///
+/// This is a small line-oriented parser tuned for the patterns we render:
+/// fenced code blocks, ATX headings, dash/star/numbered list items, and plain
+/// paragraphs with optional links. It does not attempt to handle every CommonMark
+/// edge case — that's intentional. The renderer will treat anything we don't
+/// classify as `Block::Paragraph`.
+#[must_use]
+pub fn parse(content: &str) -> ParsedMarkdown {
+    #[cfg(any(test, feature = "perf-counters"))]
+    PARSE_INVOCATIONS.fetch_add(1, Ordering::Relaxed);
+
+    let mut blocks = Vec::new();
     let mut in_code_block = false;
 
     for raw_line in content.lines() {
@@ -19,48 +122,97 @@ pub fn render_markdown(content: &str, width: u16, base_style: Style) -> Vec<Line
         }
 
         if in_code_block {
-            let code_style = Style::default()
-                .fg(palette::DEEPSEEK_SKY)
-                .add_modifier(Modifier::ITALIC);
-            out.extend(render_wrapped_line(raw_line, width, code_style, true));
+            blocks.push(Block::Code {
+                line: raw_line.to_string(),
+            });
             continue;
         }
 
         if let Some((level, text)) = parse_heading(trimmed) {
-            let style = Style::default()
-                .fg(palette::DEEPSEEK_SKY)
-                .add_modifier(Modifier::BOLD);
-            out.extend(render_wrapped_line(text, width, style, false));
+            blocks.push(Block::Heading {
+                level,
+                text: text.to_string(),
+            });
             if level == 1 {
-                out.push(Line::from(Span::styled(
-                    "─".repeat(width.min(40)),
-                    Style::default().fg(palette::TEXT_DIM),
-                )));
+                blocks.push(Block::HeadingRule);
             }
             continue;
         }
 
         if let Some((bullet, text)) = parse_list_item(trimmed) {
-            let bullet_style = Style::default().fg(palette::DEEPSEEK_SKY);
-            let content_style = base_style;
-            out.extend(render_list_line(
-                &bullet,
-                text,
-                width,
-                bullet_style,
-                content_style,
-            ));
+            blocks.push(Block::ListItem {
+                bullet,
+                text: text.to_string(),
+            });
             continue;
         }
 
-        let link_style = Style::default()
-            .fg(palette::DEEPSEEK_BLUE)
-            .add_modifier(Modifier::UNDERLINED);
-        out.extend(render_line_with_links(
-            trimmed, width, base_style, link_style,
-        ));
         if raw_line.is_empty() {
-            out.push(Line::from(""));
+            blocks.push(Block::Blank);
+            continue;
+        }
+
+        blocks.push(Block::Paragraph {
+            text: trimmed.to_string(),
+        });
+    }
+
+    ParsedMarkdown { blocks }
+}
+
+/// Render a parsed-markdown AST at the given terminal width.
+///
+/// This is the width-dependent half: word-wrapping, link styling, code-block
+/// formatting. The AST is owned by the caller (typically the transcript cache),
+/// so width-only changes can call `render_parsed` again with the same AST and
+/// skip the parse step entirely.
+#[must_use]
+pub fn render_parsed(parsed: &ParsedMarkdown, width: u16, base_style: Style) -> Vec<Line<'static>> {
+    let width = width.max(1) as usize;
+    let mut out: Vec<Line<'static>> = Vec::with_capacity(parsed.blocks.len());
+
+    for block in &parsed.blocks {
+        match block {
+            Block::Heading { text, .. } => {
+                let style = Style::default()
+                    .fg(palette::DEEPSEEK_SKY)
+                    .add_modifier(Modifier::BOLD);
+                out.extend(render_wrapped_line(text, width, style, false));
+            }
+            Block::HeadingRule => {
+                out.push(Line::from(Span::styled(
+                    "─".repeat(width.min(40)),
+                    Style::default().fg(palette::TEXT_DIM),
+                )));
+            }
+            Block::ListItem { bullet, text } => {
+                let bullet_style = Style::default().fg(palette::DEEPSEEK_SKY);
+                out.extend(render_list_line(
+                    bullet,
+                    text,
+                    width,
+                    bullet_style,
+                    base_style,
+                ));
+            }
+            Block::Code { line } => {
+                let code_style = Style::default()
+                    .fg(palette::DEEPSEEK_SKY)
+                    .add_modifier(Modifier::ITALIC);
+                out.extend(render_wrapped_line(line, width, code_style, true));
+            }
+            Block::Paragraph { text } => {
+                let link_style = Style::default()
+                    .fg(palette::DEEPSEEK_BLUE)
+                    .add_modifier(Modifier::UNDERLINED);
+                out.extend(render_line_with_links(text, width, base_style, link_style));
+            }
+            Block::Blank => {
+                // Preserve paragraph spacing. The original renderer also pushed
+                // a blank line for empty source lines that fell through the
+                // paragraph branch; mirror that exactly.
+                out.push(Line::from(""));
+            }
         }
     }
 
@@ -69,6 +221,27 @@ pub fn render_markdown(content: &str, width: u16, base_style: Style) -> Vec<Line
     }
 
     out
+}
+
+/// Convenience wrapper: parse + render in one call.
+///
+/// Equivalent to `render_parsed(&parse(content), width, base_style)`. Callers
+/// that don't manage their own cache (the Thinking body, the immediate message
+/// body) use this.
+#[must_use]
+pub fn render_markdown(content: &str, width: u16, base_style: Style) -> Vec<Line<'static>> {
+    let parsed = parse(content);
+    render_parsed(&parsed, width, base_style)
+}
+
+/// Cache-friendly parsed AST for [`HistoryCell`] rendering.
+///
+/// Wraps the `ParsedMarkdown` in `Arc` so the transcript cache can hand the
+/// same parse to many render passes (e.g. across spacers / overlays) without
+/// reallocation.
+#[must_use]
+pub fn parse_arc(content: &str) -> Arc<ParsedMarkdown> {
+    Arc::new(parse(content))
 }
 
 fn parse_heading(line: &str) -> Option<(usize, &str)> {
@@ -256,4 +429,110 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     }
 
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::Style;
+
+    fn collect_text(lines: &[Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn render_markdown_matches_parse_then_render() {
+        // The convenience wrapper must produce byte-identical output to the
+        // explicit two-step path. Without this guarantee the transcript cache
+        // and the live render diverge.
+        let source = "# Title\n\nA paragraph with a https://example.com link.\n\n- one\n- two\n```\ncode\n```";
+        let direct = render_markdown(source, 40, Style::default());
+        let parsed = parse(source);
+        let two_step = render_parsed(&parsed, 40, Style::default());
+        assert_eq!(collect_text(&direct), collect_text(&two_step));
+    }
+
+    #[test]
+    fn parse_is_width_independent() {
+        // Same source, two parses, must produce identical AST. (Sanity:
+        // parse must not depend on hidden global state like terminal width.)
+        let source = "Hello\n\n## Heading\n- list\n";
+        let a = parse(source);
+        let b = parse(source);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn render_parsed_word_wrap_changes_with_width() {
+        // The same AST must produce different layouts at different widths;
+        // otherwise the split is decorative, not functional.
+        let parsed = parse("alpha beta gamma delta epsilon zeta");
+        let wide = render_parsed(&parsed, 80, Style::default());
+        let narrow = render_parsed(&parsed, 10, Style::default());
+        assert!(
+            narrow.len() > wide.len(),
+            "narrow should produce more lines"
+        );
+    }
+
+    #[test]
+    fn parse_invocations_increment() {
+        reset_parse_invocation_count();
+        let _ = parse("hello\n");
+        let _ = parse("world\n");
+        assert_eq!(parse_invocation_count(), 2);
+    }
+
+    #[test]
+    fn render_parsed_does_not_call_parse() {
+        // Width-only changes must hit only the render path. This is the
+        // perf invariant CX#6 was filed for.
+        let parsed = parse("multiline\nsource\nwith several\nlines\n");
+        reset_parse_invocation_count();
+        let _ = render_parsed(&parsed, 80, Style::default());
+        let _ = render_parsed(&parsed, 40, Style::default());
+        let _ = render_parsed(&parsed, 20, Style::default());
+        assert_eq!(
+            parse_invocation_count(),
+            0,
+            "render_parsed must not call parse"
+        );
+    }
+
+    #[test]
+    fn fenced_code_block_collected_in_parse() {
+        let parsed = parse("text\n```\ncode line one\ncode line two\n```\nmore\n");
+        let blocks = parsed.blocks();
+        // text paragraph, two code lines, more paragraph (fences are dropped)
+        let code_lines: Vec<_> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Code { line } => Some(line.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(code_lines, vec!["code line one", "code line two"]);
+    }
+
+    #[test]
+    fn ordered_and_unordered_list_items_parse() {
+        let parsed = parse("- alpha\n* beta\n1. gamma\n");
+        let items: Vec<_> = parsed
+            .blocks()
+            .iter()
+            .filter_map(|b| match b {
+                Block::ListItem { bullet, text } => Some((bullet.as_str(), text.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(items, vec![("-", "alpha"), ("-", "beta"), ("1.", "gamma")]);
+    }
 }

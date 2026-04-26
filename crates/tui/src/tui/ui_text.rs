@@ -6,7 +6,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::tui::history::HistoryCell;
 
 pub(super) fn history_cell_to_text(cell: &HistoryCell, width: u16) -> String {
-    cell.lines(width)
+    cell.transcript_lines(width)
         .into_iter()
         .map(line_to_string)
         .collect::<Vec<_>>()
