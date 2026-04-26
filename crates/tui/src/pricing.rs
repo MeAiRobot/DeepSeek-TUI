@@ -39,13 +39,13 @@ fn pricing_for_model_at(model: &str, now: DateTime<Utc>) -> Option<ModelPricing>
             // DeepSeek lists these as a limited-time 75% discount through
             // 2026-05-05 15:59 UTC.
             return Some(ModelPricing {
-                input_cache_hit_per_million: 0.03625,
+                input_cache_hit_per_million: 0.003625,
                 input_cache_miss_per_million: 0.435,
                 output_per_million: 0.87,
             });
         }
         Some(ModelPricing {
-            input_cache_hit_per_million: 0.145,
+            input_cache_hit_per_million: 0.0145,
             input_cache_miss_per_million: 1.74,
             output_per_million: 3.48,
         })
@@ -53,7 +53,7 @@ fn pricing_for_model_at(model: &str, now: DateTime<Utc>) -> Option<ModelPricing>
         // deepseek-v4-flash and legacy aliases (deepseek-chat, deepseek-reasoner,
         // deepseek-v3*) all price as v4-flash.
         Some(ModelPricing {
-            input_cache_hit_per_million: 0.028,
+            input_cache_hit_per_million: 0.0028,
             input_cache_miss_per_million: 0.14,
             output_per_million: 0.28,
         })
@@ -136,7 +136,7 @@ mod tests {
             .unwrap();
         let pricing = pricing_for_model_at("deepseek-v4-pro", before_expiry).unwrap();
 
-        assert_eq!(pricing.input_cache_hit_per_million, 0.03625);
+        assert_eq!(pricing.input_cache_hit_per_million, 0.003625);
         assert_eq!(pricing.input_cache_miss_per_million, 0.435);
         assert_eq!(pricing.output_per_million, 0.87);
     }
@@ -146,7 +146,7 @@ mod tests {
         let after_expiry = Utc.with_ymd_and_hms(2026, 5, 5, 16, 0, 0).single().unwrap();
         let pricing = pricing_for_model_at("deepseek-v4-pro", after_expiry).unwrap();
 
-        assert_eq!(pricing.input_cache_hit_per_million, 0.145);
+        assert_eq!(pricing.input_cache_hit_per_million, 0.0145);
         assert_eq!(pricing.input_cache_miss_per_million, 1.74);
         assert_eq!(pricing.output_per_million, 3.48);
     }
@@ -156,7 +156,7 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 4, 25, 0, 0, 0).single().unwrap();
         let pricing = pricing_for_model_at("deepseek-v4-flash", now).unwrap();
 
-        assert_eq!(pricing.input_cache_hit_per_million, 0.028);
+        assert_eq!(pricing.input_cache_hit_per_million, 0.0028);
         assert_eq!(pricing.input_cache_miss_per_million, 0.14);
         assert_eq!(pricing.output_per_million, 0.28);
     }

@@ -661,7 +661,7 @@ impl App {
         let sidebar_width_percent = settings.sidebar_width_percent;
         let sidebar_focus = SidebarFocus::from_setting(&settings.sidebar_focus);
         let max_input_history = settings.max_input_history;
-        let ui_theme = palette::ui_theme(&settings.theme);
+        let ui_theme = palette::UI_THEME;
         let model = settings.default_model.clone().unwrap_or(model);
         let compact_threshold =
             compaction_threshold_for_model_and_effort(&model, config.reasoning_effort());

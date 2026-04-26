@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 
 use super::CommandResult;
 use crate::config::{COMMON_DEEPSEEK_MODELS, clear_api_key, normalize_model_name};
-use crate::palette;
 use crate::settings::Settings;
 use crate::tui::app::{App, AppAction, AppMode, OnboardingState, SidebarFocus};
 use crate::tui::approval::ApprovalMode;
@@ -129,10 +128,6 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
                 app.last_completion_tokens = None;
                 action = Some(AppAction::UpdateCompaction(app.compaction_config()));
             }
-        }
-        "theme" => {
-            app.ui_theme = palette::ui_theme(&settings.theme);
-            app.mark_history_updated();
         }
         "sidebar_width" | "sidebar" => {
             app.sidebar_width_percent = settings.sidebar_width_percent;

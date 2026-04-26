@@ -13,8 +13,6 @@ use crate::config::{expand_path, normalize_model_name};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Color theme: "default", "dark", "light"
-    pub theme: String,
     /// Auto-compact conversations when they get long
     pub auto_compact: bool,
     /// Reduce status noise and collapse details more aggressively
@@ -46,7 +44,6 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            theme: "whale".to_string(),
             auto_compact: true,
             calm_mode: false,
             low_motion: false,
@@ -130,14 +127,6 @@ impl Settings {
     /// Set a single setting by key
     pub fn set(&mut self, key: &str, value: &str) -> Result<()> {
         match key {
-            "theme" => {
-                if !["default", "dark", "light", "whale"].contains(&value) {
-                    anyhow::bail!(
-                        "Failed to update setting: invalid theme '{value}'. Expected: default, dark, light, whale."
-                    );
-                }
-                self.theme = value.to_string();
-            }
             "auto_compact" | "compact" => {
                 self.auto_compact = parse_bool(value)?;
             }
@@ -252,7 +241,6 @@ impl Settings {
         let mut lines = Vec::new();
         lines.push("Settings:".to_string());
         lines.push("─────────────────────────────".to_string());
-        lines.push(format!("  theme:              {}", self.theme));
         lines.push(format!("  auto_compact:       {}", self.auto_compact));
         lines.push(format!("  calm_mode:          {}", self.calm_mode));
         lines.push(format!("  low_motion:         {}", self.low_motion));
@@ -284,7 +272,6 @@ impl Settings {
     #[allow(dead_code)]
     pub fn available_settings() -> Vec<(&'static str, &'static str)> {
         vec![
-            ("theme", "Color theme: default, dark, light"),
             ("auto_compact", "Auto-compact conversations: on/off"),
             ("calm_mode", "Calmer UI defaults: on/off"),
             ("low_motion", "Reduce animation and redraw churn: on/off"),

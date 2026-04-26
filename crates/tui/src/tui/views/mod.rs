@@ -364,12 +364,6 @@ impl ConfigView {
                 scope: ConfigScope::Saved,
             },
             ConfigRow {
-                key: "theme".to_string(),
-                value: settings.theme.clone(),
-                editable: true,
-                scope: ConfigScope::Saved,
-            },
-            ConfigRow {
                 key: "sidebar_width".to_string(),
                 value: settings.sidebar_width_percent.to_string(),
                 editable: true,
@@ -597,7 +591,6 @@ fn config_hint_for_key(key: &str) -> &'static str {
         | "composer_border" => "on/off, true/false, yes/no, 1/0",
         "composer_density" | "transcript_spacing" => "compact | comfortable | spacious",
         "default_mode" => "agent | plan | yolo",
-        "theme" => "default | dark | light | whale",
         "sidebar_width" => "10..=50",
         "sidebar_focus" => "auto | plan | todos | tasks | agents",
         "max_history" => "integer (0 allowed)",

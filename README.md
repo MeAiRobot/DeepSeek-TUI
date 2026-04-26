@@ -21,17 +21,17 @@ DeepSeek TUI is a coding agent that runs entirely in your terminal. It gives Dee
 
 ### Key Features
 
-- 🌊 **Native RLM** *(new in v0.6)* — `rlm_query` tool fans out 1–16 cheap `deepseek-v4-flash` children in parallel against the existing DeepSeek client. The model uses it for batched analysis, decomposition, or cheap parallel reasoning — one structured tool call, no external runtime
-- 🧠 **Thinking-mode streaming** — watch DeepSeek's chain-of-thought as it reasons about your code
-- 🔧 **Full tool suite** — file ops, shell execution, git, web search/browse, apply-patch, sub-agents, MCP servers, and more
-- 🪟 **1M-token context** — feed entire codebases; automatic intelligent compaction when context fills up
-- 🎛️ **Three interaction modes** — Plan (read-only explore), Agent (interactive with approval), YOLO (auto-approved). All three guided by decomposition-first system prompts that teach the model to `todo_write`, `update_plan`, and spawn sub-agents before acting
-- ⚡ **Reasoning-effort tiers** — cycle through `off → high → max` with Shift+Tab
-- 🔄 **Session save/resume** — checkpoint and resume long sessions, fork conversations
-- 🌐 **HTTP/SSE runtime API** — `deepseek serve --http` for headless agent workflows
-- 📦 **MCP protocol** — connect to Model Context Protocol servers for extended tooling
-- 💰 **Live cost tracking** — per-turn and session-level token usage and cost estimates
-- 🎨 **Dark & light themes** — with a DeepSeek-blue branded palette
+- **Native RLM** (`rlm_query` tool) — fans out 1–16 cheap `deepseek-v4-flash` children in parallel against the existing DeepSeek client for batched analysis, decomposition, or parallel reasoning
+- **Thinking-mode streaming** — shows DeepSeek's chain-of-thought as it reasons about your code
+- **Full tool suite** — file ops, shell execution, git, web search/browse, apply-patch, sub-agents, MCP servers
+- **1M-token context** — automatic intelligent compaction when context fills up
+- **Three interaction modes** — Plan (read-only explore), Agent (interactive with approval), YOLO (auto-approved). Decomposition-first system prompts teach the model to `todo_write`, `update_plan`, and spawn sub-agents before acting
+- **Reasoning-effort tiers** — cycle through `off → high → max` with Shift+Tab
+- **Session save/resume** — checkpoint and resume long sessions
+- **HTTP/SSE runtime API** — `deepseek serve --http` for headless agent workflows
+- **MCP protocol** — connect to Model Context Protocol servers for extended tooling
+- **Live cost tracking** — per-turn and session-level token usage and cost estimates
+- **Dark theme** — DeepSeek-blue palette
 
 ---
 
@@ -119,8 +119,8 @@ DeepSeek TUI targets **DeepSeek V4** models with 1M-token context windows by def
 
 | Model | Context | Input (cache hit) | Input (cache miss) | Output |
 |---|---|---|---|---|
-| `deepseek-v4-pro` | 1M | $0.03625 / 1M* | $0.435 / 1M* | $0.87 / 1M* |
-| `deepseek-v4-flash` | 1M | $0.028 / 1M | $0.14 / 1M | $0.28 / 1M |
+| `deepseek-v4-pro` | 1M | $0.003625 / 1M* | $0.435 / 1M* | $0.87 / 1M* |
+| `deepseek-v4-flash` | 1M | $0.0028 / 1M | $0.14 / 1M | $0.28 / 1M |
 
 Legacy aliases `deepseek-chat` and `deepseek-reasoner` silently map to `deepseek-v4-flash`.
 
@@ -166,8 +166,6 @@ deepseek serve --http                         # HTTP/SSE API server
 | **Plan** 🔍 | Read-only investigation — model explores and proposes a decomposition plan (`update_plan` + `todo_write`) before making changes |
 | **Agent** 🤖 | Default interactive mode — multi-step tool use with approval gates; model outlines work via `todo_write` before requesting writes |
 | **YOLO** ⚡ | Auto-approve all tools in a trusted workspace; model still creates `todo_write`/`update_plan` to keep work visible and trackable |
-
-All three modes are guided by decomposition-first system prompts: the model is taught to break work into verifiable tasks, track them in the sidebar, and fan out sub-agents for parallel work — "managing the geniuses" rather than just running single-shot prompts.
 
 ---
 

@@ -1,9 +1,9 @@
 //! Whale/DeepSeek terminal theme tokens.
 //!
 //! A small, deliberately flat module that names the color, border, and
-//! padding choices the TUI is already making. The dark variant matches the
-//! values previously hard-coded against [`crate::palette`]; the light variant
-//! is reserved for the future skin swap that issue #14 tracks. Visible output
+//! padding choices the TUI is already making. All values match the dark
+//! palette previously hard-coded against [`crate::palette`]; a single
+//! source-of-truth change here can swap the skin later. Visible output
 //! is not changed by introducing this module.
 //!
 //! The only consumers today are the plan and tool cell renderers in
@@ -21,9 +21,6 @@ use crate::tui::history::ToolStatus;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Variant {
     Dark,
-    /// Reserved for the future skin swap (issue #14). Not wired up yet.
-    #[allow(dead_code)]
-    Light,
 }
 
 /// Centralized visual tokens for sidebar, plan, and tool rendering.
@@ -80,18 +77,6 @@ impl Theme {
             plan_pending_color: palette::TEXT_MUTED,
             plan_in_progress_color: palette::STATUS_WARNING,
             plan_completed_color: palette::STATUS_SUCCESS,
-        }
-    }
-
-    /// The light variant. Same RGB values as `dark()` today so a future skin
-    /// swap is a single-source-of-truth change in this file. Out of scope:
-    /// actually picking a distinct light palette.
-    #[must_use]
-    #[allow(dead_code)]
-    pub const fn light() -> Self {
-        Self {
-            variant: Variant::Light,
-            ..Self::dark()
         }
     }
 
@@ -165,20 +150,6 @@ mod tests {
         assert_eq!(theme.tool_running_accent, palette::ACCENT_TOOL_LIVE);
         assert_eq!(theme.tool_success_accent, palette::TEXT_DIM);
         assert_eq!(theme.tool_failed_accent, palette::ACCENT_TOOL_ISSUE);
-    }
-
-    #[test]
-    fn light_theme_keeps_dark_values_until_skin_swap() {
-        // The light variant exists so the future skin swap is a single-file
-        // change. It intentionally mirrors `dark()` today so introducing the
-        // module does not move pixels.
-        let dark = Theme::dark();
-        let light = Theme::light();
-        assert_eq!(light.variant, Variant::Light);
-        assert_eq!(light.section_border_color, dark.section_border_color);
-        assert_eq!(light.tool_running_accent, dark.tool_running_accent);
-        assert_eq!(light.tool_failed_accent, dark.tool_failed_accent);
-        assert_eq!(light.plan_in_progress_color, dark.plan_in_progress_color);
     }
 
     #[test]

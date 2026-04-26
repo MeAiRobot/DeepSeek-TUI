@@ -64,8 +64,6 @@ pub const ACCENT_PRIMARY: Color = DEEPSEEK_BLUE; // #3578E5
 #[allow(dead_code)]
 pub const ACCENT_SECONDARY: Color = TEXT_ACCENT; // #6AAEF2
 #[allow(dead_code)]
-pub const BACKGROUND_LIGHT: Color = Color::Rgb(30, 47, 71); // #1E2F47
-#[allow(dead_code)]
 pub const BACKGROUND_DARK: Color = Color::Rgb(13, 26, 48); // #0D1A30
 #[allow(dead_code)]
 pub const STATUS_NEUTRAL: Color = Color::Rgb(160, 160, 160); // #A0A0A0
@@ -103,6 +101,7 @@ pub const MODE_YOLO: Color = Color::Rgb(255, 100, 100); // Warning red
 pub const MODE_PLAN: Color = Color::Rgb(255, 170, 60); // Orange
 
 pub const SELECTION_BG: Color = Color::Rgb(26, 44, 74);
+#[allow(dead_code)]
 pub const COMPOSER_BG: Color = DEEPSEEK_SLATE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,31 +112,9 @@ pub struct UiTheme {
     pub header_bg: Color,
 }
 
-pub fn ui_theme(name: &str) -> UiTheme {
-    match name.to_ascii_lowercase().as_str() {
-        "dark" => UiTheme {
-            name: "dark",
-            composer_bg: DEEPSEEK_INK,
-            selection_bg: SELECTION_BG,
-            header_bg: DEEPSEEK_INK,
-        },
-        "light" => UiTheme {
-            name: "light",
-            composer_bg: Color::Rgb(26, 38, 58),
-            selection_bg: SELECTION_BG,
-            header_bg: DEEPSEEK_SLATE,
-        },
-        "whale" => UiTheme {
-            name: "whale",
-            composer_bg: DEEPSEEK_SLATE,
-            selection_bg: SELECTION_BG,
-            header_bg: DEEPSEEK_INK,
-        },
-        _ => UiTheme {
-            name: "default",
-            composer_bg: COMPOSER_BG,
-            selection_bg: SELECTION_BG,
-            header_bg: DEEPSEEK_INK,
-        },
-    }
-}
+pub const UI_THEME: UiTheme = UiTheme {
+    name: "whale",
+    composer_bg: DEEPSEEK_SLATE,
+    selection_bg: SELECTION_BG,
+    header_bg: DEEPSEEK_INK,
+};

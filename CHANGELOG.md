@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Test hygiene
 - **5 regression tests pin auto-scroll churn contract.** `mark_history_updated` does not scroll; tool-cell handlers only `mark_history_updated`; `add_message` and `flush_active_cell` gate on `user_scrolled_during_stream`; the per-stream lock clears at TurnComplete and when the user returns to the live tail. (P2.4)
 
+## [0.6.1] - 2026-04-26
+
+### Changed
+- **V4 cache-hit input prices cut to 1/10th per DeepSeek's pricing update.** Pro promo 0.03625→0.003625, Pro base 0.145→0.0145, Flash 0.028→0.0028 per 1M tokens. Cache-miss and output rates unchanged.
+- **Removed the "light" theme option.** It was never tested, looked bad, and the dark/whale palettes are the supported targets. Theme validation now accepts only `default`, `dark`, and `whale`.
+- **System prompts redesigned with decomposition-first philosophy.** All five prompt tiers teach the model to `todo_write` before acting, `update_plan` for strategy, and sub-agents for parallel work. Inspired by the mismanaged-geniuses hypothesis (Zhang et al., 2026).
+
 ## [0.6.0] - 2026-04-25
 
 ### Added
@@ -558,7 +565,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.4.9...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.4.9...v0.6.0
 [0.4.9]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.4.8...v0.4.9
 [0.4.8]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.33...v0.4.8
 [0.3.33]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.32...v0.3.33
