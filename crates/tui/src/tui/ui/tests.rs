@@ -1399,3 +1399,115 @@ fn exploring_label_for_list_files_uses_progressive() {
 
 // `running_status_label_with_elapsed` lives in `crate::tui::history` next to
 // the other tool-header helpers — its tests live there too.
+
+// ---- P2.4: auto-scroll churn regressions ----
+//
+// The contract: once the user scrolls away from the live tail mid-turn
+// (`user_scrolled_during_stream = true`), no path should yank them back to
+// the bottom until either (a) they explicitly scroll to tail, (b) the turn
+// ends, or (c) they hit an explicit jump-to-bottom key. Tool-cell handlers
+// only call `mark_history_updated`, which does NOT scroll. `add_message`
+// gates on the flag.
+
+#[test]
+fn add_message_does_not_scroll_when_user_scrolled_away() {
+    use crate::tui::scrolling::TranscriptScroll;
+
+    let mut app = create_test_app();
+    // Pre-condition: user was following the tail, then scrolled up.
+    app.transcript_scroll = TranscriptScroll::at_line(7);
+    app.user_scrolled_during_stream = true;
+
+    app.add_message(HistoryCell::User {
+        content: "fresh user message".to_string(),
+    });
+
+    assert!(
+        !app.transcript_scroll.is_at_tail(),
+        "add_message must respect user_scrolled_during_stream",
+    );
+}
+
+#[test]
+fn add_message_pins_to_tail_when_user_was_following() {
+    use crate::tui::scrolling::TranscriptScroll;
+
+    let mut app = create_test_app();
+    app.transcript_scroll = TranscriptScroll::to_bottom();
+    app.user_scrolled_during_stream = false;
+
+    app.add_message(HistoryCell::User {
+        content: "fresh user message".to_string(),
+    });
+
+    assert!(
+        app.transcript_scroll.is_at_tail(),
+        "auto-pin should still work when the user hasn't opted out",
+    );
+}
+
+#[test]
+fn tool_call_started_does_not_scroll_when_user_scrolled_away() {
+    // Tool-cell handlers must not sneak in a scroll_to_bottom — they go
+    // through `mark_history_updated` which only bumps `history_version`.
+    use crate::tui::scrolling::TranscriptScroll;
+
+    let mut app = create_test_app();
+    app.transcript_scroll = TranscriptScroll::at_line(7);
+    app.user_scrolled_during_stream = true;
+
+    handle_tool_call_started(
+        &mut app,
+        "tid",
+        "exec_shell",
+        &serde_json::json!({"command": "ls"}),
+    );
+
+    assert!(
+        !app.transcript_scroll.is_at_tail(),
+        "tool-cell start must not yank scroll position to bottom",
+    );
+}
+
+#[test]
+fn tool_call_complete_does_not_scroll_when_user_scrolled_away() {
+    use crate::tui::scrolling::TranscriptScroll;
+
+    let mut app = create_test_app();
+    handle_tool_call_started(
+        &mut app,
+        "tid",
+        "exec_shell",
+        &serde_json::json!({"command": "ls"}),
+    );
+
+    // After start, user scrolls up.
+    app.transcript_scroll = TranscriptScroll::at_line(7);
+    app.user_scrolled_during_stream = true;
+
+    handle_tool_call_complete(&mut app, "tid", "exec_shell", &ok_result("output"));
+
+    assert!(
+        !app.transcript_scroll.is_at_tail(),
+        "tool-cell complete must not yank scroll position to bottom",
+    );
+}
+
+#[test]
+fn mark_history_updated_does_not_call_scroll_to_bottom() {
+    // Behavior pin: future contributors must not add a scroll_to_bottom
+    // here. The scroll-following logic lives only in `add_message` and
+    // `flush_active_cell`, both gated on `user_scrolled_during_stream`.
+    use crate::tui::scrolling::TranscriptScroll;
+
+    let mut app = create_test_app();
+    app.transcript_scroll = TranscriptScroll::at_line(3);
+    app.user_scrolled_during_stream = true;
+
+    app.mark_history_updated();
+
+    assert!(
+        !app.transcript_scroll.is_at_tail(),
+        "mark_history_updated must not scroll",
+    );
+}
